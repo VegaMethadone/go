@@ -270,15 +270,24 @@ func finishsweep_m() {
 }
 
 func bgsweep(c chan int) {
-	sweep.g = getg()
+	sweep.g = getg() // интринсик, берем текущую горутину
 
-	lockInit(&sweep.lock, lockRankSweep)
-	lock(&sweep.lock)
-	sweep.parked = true
-	c <- 1
+	lockInit(&sweep.lock, lockRankSweep) // инициализаиця мьютекса у нашего sweep
+	lock(&sweep.lock)                    // лочимся
+	sweep.parked = true                  // помечаем как припоркованную. but why ?
+	c <- 1                               // сигнал, что мы проинициализировались
+
+	// паркуемся (спящий режим)
 	goparkunlock(&sweep.lock, waitReasonGCSweepWait, traceBlockGCSweep, 1)
 
 	for {
+		/*
+				Низкий приоритет: Sweeper уступает CPU другим горутинам
+
+			    Не критично если не работает: Аллокирующие горутины тоже помогают подметать
+
+			    Работать в простое: Только когда CPU свободен
+		*/
 		// bgsweep attempts to be a "low priority" goroutine by intentionally
 		// yielding time. It's OK if it doesn't run, because goroutines allocating
 		// memory will sweep and ensure that all spans are swept before the next
@@ -295,31 +304,49 @@ func bgsweep(c chan int) {
 		// isn't spare idle time available on other cores. If there's available idle
 		// time, helping to sweep can reduce allocation latencies by getting ahead of
 		// the proportional sweeper and having spans ready to go for allocation.
+
+		// работаем партиями по 10 span-ов
 		const sweepBatchSize = 10
+		// счетчик очищенных спанов
 		nSwept := 0
+
+		// цикл очистки
+		/*
+			чистит один span, возвращает количество освобожденных страниц
+			1 span ≈ 8KB-512KB памяти
+			Очистка 1 span ≈ 30 наносекунд на современном CPU
+
+			^uintptr(0) = 0xFFFFFFFFFFFFFFFF || 0xFFFFFFFF (x86-64, x32)
+
+		*/
 		for sweepone() != ^uintptr(0) {
 			nSwept++
 			if nSwept%sweepBatchSize == 0 {
-				goschedIfBusy()
+				goschedIfBusy() // проверяем, отдадим ли мы управление
 			}
 		}
+
+		// пока будет возвращать тру, будем бесконечно вызвывать для очистки барьеров записи
 		for freeSomeWbufs(true) {
 			// N.B. freeSomeWbufs is already batched internally.
-			goschedIfBusy()
+			goschedIfBusy() // проверяем, отдадим ли мы управление
 		}
-		lock(&sweep.lock)
+		lock(&sweep.lock) // Захват мьютекса для проверки гонки с другим goroutine, который может будить sweeper
 		if !isSweepDone() {
-			// This can happen if a GC runs between
-			// gosweepone returning ^0 above
-			// and the lock being acquired.
+			// Это может произойти, если GC запустился между
+			// возвратом ^0 из gosweepone выше
+			// и захватом мьютекса
 			unlock(&sweep.lock)
-			// This goroutine must preempt when we have no work to do
-			// but isSweepDone returns false because of another existing sweeper.
-			// See issue #73499.
+			// Эта goroutine должна прерваться, когда у нас нет работы,
+			// но isSweepDone возвращает false из-за другого существующего sweeper.
+			// Смотри issue #73499.
 			goschedIfBusy()
 			continue
 		}
+		// Помечаем себя как ожидающего
 		sweep.parked = true
+
+		// Блокируем текущую goroutine до следующего вызова сборщика мусора
 		goparkunlock(&sweep.lock, waitReasonGCSweepWait, traceBlockGCSweep, 1)
 	}
 }

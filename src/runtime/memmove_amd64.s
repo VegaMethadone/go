@@ -32,7 +32,7 @@
 
 // func memmove(to, from unsafe.Pointer, n uintptr)
 // ABIInternal for performance.
-TEXT runtime·memmove<ABIInternal>(SB), NOSPLIT, $0-24
+TEXT runtime·memmove<ABIInternal>(SB), NOSPLIT, $0-24 // memmove_and64  под шлинукс
 	// AX = to
 	// BX = from
 	// CX = n

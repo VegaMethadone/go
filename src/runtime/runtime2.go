@@ -175,14 +175,16 @@ type funcval struct {
 	// variable-size, fn-specific data here
 }
 
+// структура интерйеса
 type iface struct {
-	tab  *itab
-	data unsafe.Pointer
+	tab  *itab          // Таблица методов (интерфейс + тип)
+	data unsafe.Pointer // указатель на value
 }
 
+// пустой интерйес
 type eface struct {
-	_type *_type
-	data  unsafe.Pointer
+	_type *_type         // указатель на тип
+	data  unsafe.Pointer // указатель на value
 }
 
 func efaceOf(ep *any) *eface {
@@ -330,11 +332,11 @@ type sudog struct {
 	// channel this sudog is blocking on. shrinkstack depends on
 	// this for sudogs involved in channel ops.
 
-	g *g
+	g *g // горутина, которая спит
 
-	next *sudog
-	prev *sudog
-	elem unsafe.Pointer // data element (may point to stack)
+	next *sudog         // связынй список ??
+	prev *sudog         // связынй список ??
+	elem unsafe.Pointer // data element (may point to stack) // елемент, который мы отправим (Если ресивер, то ссылка на ячейку памяти, куда положим данные)
 
 	// The following fields are never accessed concurrently.
 	// For channels, waitlink is only accessed by g.
@@ -530,26 +532,32 @@ const (
 )
 
 type m struct {
-	g0      *g     // goroutine with scheduling stack
+	/*
+		Для изоляции системных операций разных потоков
+		Отсутсвие блокировок уменьшает latency
+		Ошибки не роняют все потоки и не требуют механизма recover для системного кода
+	*/
+	g0      *g     // Горутина с системным стеком для выполнения рантайма
 	morebuf gobuf  // gobuf arg to morestack
 	divmod  uint32 // div/mod denominator for arm - known to liblink (cmd/internal/obj/arm/obj5.go)
 
 	// Fields not known to debuggers.
-	procid          uint64            // for debuggers, but offset not hard-coded
-	gsignal         *g                // signal-handling g
-	goSigStack      gsignalStack      // Go-allocated signal handling stack
-	sigmask         sigset            // storage for saved signal mask
-	tls             [tlsSlots]uintptr // thread-local storage (for x86 extern register)
-	mstartfn        func()
-	curg            *g       // current running goroutine
-	caughtsig       guintptr // goroutine running during fatal signal
+	procid     uint64            // for debuggers, but offset not hard-coded
+	gsignal    *g                // Горутины для обработки сигналов. Если не используется -> nil
+	goSigStack gsignalStack      // Так как у gsignal горутины мало места в стеке, то настраиваем альтернативный стек
+	sigmask    sigset            // storage for saved signal mask
+	tls        [tlsSlots]uintptr // thread-local storage (for x86 extern register)
+	mstartfn   func()
+	curg       *g       // обычная горутина
+	caughtsig  guintptr // goroutine running during fatal signal
+	// каждый P также имеет свой аллокатор mcache
 	p               puintptr // attached p for executing go code (nil if not executing go code)
 	nextp           puintptr
 	oldp            puintptr // the p that was attached before executing a syscall
 	id              int64
 	mallocing       int32
 	throwing        throwType
-	preemptoff      string // if != "", keep curg running on this m
+	preemptoff      string // if != "", keep curg running on this m  Странно, почему просто enum тут не сделать ?
 	locks           int32
 	dying           int32
 	profilehz       int32
@@ -639,6 +647,7 @@ type mPadded struct {
 	_ [(1 - goarch.IsWasm) * (2048 - mallocHeaderSize - mRedZoneSize - unsafe.Sizeof(m{}))]byte
 }
 
+// процессор го
 type p struct {
 	id          int32
 	status      uint32 // one of pidle/prunning/...
@@ -647,7 +656,8 @@ type p struct {
 	syscalltick uint32     // incremented on every system call
 	sysmontick  sysmontick // last tick observed by sysmon
 	m           muintptr   // back-link to associated m (nil if idle)
-	mcache      *mcache
+	// Большинство аллокаций выполняется из mcache без блокировок
+	mcache      *mcache // аллокатор
 	pcache      pageCache
 	raceprocctx uintptr
 
@@ -661,7 +671,7 @@ type p struct {
 	// Queue of runnable goroutines. Accessed without lock.
 	runqhead uint32
 	runqtail uint32
-	runq     [256]guintptr
+	runq     [256]guintptr // - локальная очередь горутин
 	// runnext, if non-nil, is a runnable G that was ready'd by
 	// the current G and should be run next instead of what's in
 	// runq if there's time remaining in the running G's time
@@ -766,6 +776,7 @@ type p struct {
 	// that its size class is an integer multiple of the cache line size (for any of our architectures).
 }
 
+// структура шедулера
 type schedt struct {
 	goidgen    atomic.Uint64
 	lastpoll   atomic.Int64 // time of last network poll, 0 if currently polling
@@ -787,13 +798,14 @@ type schedt struct {
 
 	ngsys atomic.Int32 // number of system goroutines
 
-	pidle        puintptr // idle p's
-	npidle       atomic.Int32
+	pidle        puintptr      // idle p's
+	npidle       atomic.Int32  // кол. P в простое
 	nmspinning   atomic.Int32  // See "Worker thread parking/unparking" comment in proc.go.
 	needspinning atomic.Uint32 // See "Delicate dance" comment in proc.go. Boolean. Must hold sched.lock to set to 1.
 
+	// Глобальная очередь runnable горутин
 	// Global runnable queue.
-	runq gQueue
+	runq gQueue // блядЬ. потерял её
 
 	// disable controls selective disabling of the scheduler.
 	//
@@ -802,7 +814,8 @@ type schedt struct {
 	// disable is protected by sched.lock.
 	disable struct {
 		// user disables scheduling of user goroutines.
-		user     bool
+		user bool
+		// очередь для горутин, когда шедулер отключен (работа GC)
 		runnable gQueue // pending runnable Gs
 	}
 
@@ -960,6 +973,11 @@ type funcinl struct {
 	startLine int32
 }
 
+/*
+The first word of every non-empty interface type contains an *ITab.
+It records the underlying concrete type (Type),
+the interface type it is implementing (Inter), and some ancillary information.
+*/
 type itab = abi.ITab
 
 // Lock-free stack node.
@@ -1209,22 +1227,31 @@ var isIdleInSynctest = [len(waitReasonStrings)]bool{
 }
 
 var (
-	allm          *m
-	gomaxprocs    int32
+	/*
+			allm (глобальная переменная)
+			│
+			▼
+		[M1] → alllink → [M2] → alllink → [M3] → alllink → [M4] → alllink → nil
+			▲                                     │
+			└─────────────────────────────────────┘
+				(возможно, есть цикл в некоторых версиях, но это не точно)
+	*/
+	allm          *m    // Linked-list of all Ms. Written under sched.lock, read atomically. // Список всех M (потоков)
+	gomaxprocs    int32 // Максимальное количество P
 	numCPUStartup int32
-	forcegc       forcegcstate
-	sched         schedt
+	forcegc       forcegcstate // видимо информация о принуждение работы GC
+	sched         schedt       // структура планировщика
 	newprocs      int32
 )
 
 var (
 	// allpLock protects P-less reads and size changes of allp, idlepMask,
 	// and timerpMask, and all writes to allp.
-	allpLock mutex
+	allpLock mutex // Lock для allp
 
 	// len(allp) == gomaxprocs; may change at safe points, otherwise
 	// immutable.
-	allp []*p
+	allp []*p // Все P (процессоры)
 
 	// Bitmask of Ps in _Pidle list, one bit per P. Reads and writes must
 	// be atomic. Length may change at safe points.

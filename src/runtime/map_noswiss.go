@@ -65,21 +65,23 @@ import (
 	"unsafe"
 )
 
+// casual map with bit shifting
 type maptype = abi.OldMapType
 
 const (
 	// Maximum number of key/elem pairs a bucket can hold.
-	bucketCntBits = abi.OldMapBucketCountBits
+	bucketCntBits = abi.OldMapBucketCountBits // 8
 
 	// Maximum average load of a bucket that triggers growth is bucketCnt*13/16 (about 80% full)
 	// Because of minimum alignment rules, bucketCnt is known to be at least 8.
 	// Represent as loadFactorNum/loadFactorDen, to allow integer math.
-	loadFactorDen = 2
-	loadFactorNum = loadFactorDen * abi.OldMapBucketCount * 13 / 16
+	loadFactorDen = 2                                               // density ? плотность
+	loadFactorNum = loadFactorDen * abi.OldMapBucketCount * 13 / 16 // load factor 2 * 8 * 13 / 16 = 13
 
 	// data offset should be the size of the bmap struct, but needs to be
 	// aligned correctly. For amd64p32 this means 64-bit alignment
 	// even though pointers are 32 bit.
+	// видимо тут лежат бакеты
 	dataOffset = unsafe.Offsetof(struct {
 		b bmap
 		v int64
@@ -115,18 +117,18 @@ func isEmpty(x uint8) bool {
 type hmap struct {
 	// Note: the format of the hmap is also encoded in cmd/compile/internal/reflectdata/reflect.go.
 	// Make sure this stays in sync with the compiler's definition.
-	count     int // # live cells == size of map.  Must be first (used by len() builtin)
-	flags     uint8
-	B         uint8  // log_2 of # of buckets (can hold up to loadFactor * 2^B items)
-	noverflow uint16 // approximate number of overflow buckets; see incrnoverflow for details
-	hash0     uint32 // hash seed
+	count     int    // Текущее количество элементов в мапе (len(map))
+	flags     uint8  // Флаги состояния (итерация, запись и т.д.)
+	B         uint8  // log2 от количества bucket'ов (количество bucket'ов = 2^B)
+	noverflow uint16 // Приблизительное количество overflow bucket'ов
+	hash0     uint32 // SEED для хэш-функции (для рандомизации)
 
-	buckets    unsafe.Pointer // array of 2^B Buckets. may be nil if count==0.
-	oldbuckets unsafe.Pointer // previous bucket array of half the size, non-nil only when growing
-	nevacuate  uintptr        // progress counter for evacuation (buckets less than this have been evacuated)
+	buckets    unsafe.Pointer // Указатель на массив bucket'ов (основной)
+	oldbuckets unsafe.Pointer // Указатель на старый массив при ресайзе
+	nevacuate  uintptr        // Прогресс эвакуации при ресайзе
 	clearSeq   uint64
 
-	extra *mapextra // optional fields
+	extra *mapextra // Дополнительные поля для оптимизаций
 }
 
 // mapextra holds fields that are not present on all maps.
@@ -136,14 +138,19 @@ type mapextra struct {
 	// However, bmap.overflow is a pointer. In order to keep overflow buckets
 	// alive, we store pointers to all overflow buckets in hmap.extra.overflow and hmap.extra.oldoverflow.
 	// overflow and oldoverflow are only used if key and elem do not contain pointers.
+
+	// чтобы держать переполненые бакеты живыми, мы храним указатели
+	// всех переполненных бакетов в  hmap.extra.overflow and hmap.extra.oldoverflow.
+	// overflow и oldoverflow используются в том случае, если нет указателей ни в ключе, ни в значение
+
 	// overflow contains overflow buckets for hmap.buckets.
 	// oldoverflow contains overflow buckets for hmap.oldbuckets.
 	// The indirection allows to store a pointer to the slice in hiter.
-	overflow    *[]*bmap
-	oldoverflow *[]*bmap
+	overflow    *[]*bmap // Overflow bucket'ы для buckets
+	oldoverflow *[]*bmap // Overflow bucket'ы для oldbuckets
 
 	// nextOverflow holds a pointer to a free overflow bucket.
-	nextOverflow *bmap
+	nextOverflow *bmap // Следующий свободный overflow bucket
 }
 
 // A bucket for a Go map.
@@ -151,7 +158,13 @@ type bmap struct {
 	// tophash generally contains the top byte of the hash value
 	// for each key in this bucket. If tophash[0] < minTopHash,
 	// tophash[0] is a bucket evacuation state instead.
-	tophash [abi.OldMapBucketCount]uint8
+
+	// 1. Массив верхних байтов хэшей
+	tophash [abi.OldMapBucketCount]uint8 // 1 << 3 = 8
+	// Каждый tophash[i] содержит:
+	// - Либо верхний байт хэша ключа
+	// - Либо специальное значение (если < minTopHash = 5)
+
 	// Followed by bucketCnt keys and then bucketCnt elems.
 	// NOTE: packing all the keys together and then all the elems together makes the
 	// code a bit more complicated than alternating key/elem/key/elem/... but it allows
@@ -163,58 +176,94 @@ type bmap struct {
 // If you modify hiter, also change cmd/compile/internal/reflectdata/reflect.go
 // and reflect/value.go to match the layout of this structure.
 type hiter struct {
-	key         unsafe.Pointer // Must be in first position.  Write nil to indicate iteration end (see cmd/compile/internal/walk/range.go).
-	elem        unsafe.Pointer // Must be in second position (see cmd/compile/internal/walk/range.go).
-	t           *maptype
-	h           *hmap
-	buckets     unsafe.Pointer // bucket ptr at hash_iter initialization time
-	bptr        *bmap          // current bucket
-	overflow    *[]*bmap       // keeps overflow buckets of hmap.buckets alive
-	oldoverflow *[]*bmap       // keeps overflow buckets of hmap.oldbuckets alive
-	startBucket uintptr        // bucket iteration started at
-	offset      uint8          // intra-bucket offset to start from during iteration (should be big enough to hold bucketCnt-1)
-	wrapped     bool           // already wrapped around from end of bucket array to beginning
-	B           uint8
-	i           uint8
-	bucket      uintptr
-	checkBucket uintptr
-	clearSeq    uint64
+	// Указатели на текущий ключ и значение
+	key  unsafe.Pointer // Текущий ключ (должен быть первым)(see cmd/compile/internal/walk/range.go).
+	elem unsafe.Pointer // Текущее значение (должен быть вторым)(see cmd/compile/internal/walk/range.go).
+	t    *maptype       // Тип мапы (размеры ключа/значения, хэш-функция и т.д.)
+	h    *hmap          // Ссылка на саму мапу
+
+	// Состояние bucket'ов
+	buckets     unsafe.Pointer // Сохраненная копия h.buckets на момент начала итерации
+	bptr        *bmap          // Текущий bucket, который обрабатываем
+	overflow    *[]*bmap       // Сохраняем overflow buckets от GC
+	oldoverflow *[]*bmap       // Сохраняем старые overflow buckets (при ресайзе)
+
+	// Начальная позиция итерации
+	startBucket uintptr // Bucket, с которого началась итерация (случайный)
+	offset      uint8   // Смещение внутри bucket'а (случайное)
+	wrapped     bool    // Флаг: прошли ли уже полный круг
+
+	// Текущая позиция
+	B      uint8   // Текущий размер мапы (log2 от количества buckets)
+	i      uint8   // Текущий индекс внутри bucket'а (0-7)
+	bucket uintptr // Текущий номер bucket'а
+
+	// Специальные флаги для ресайза
+	checkBucket uintptr // Для проверки bucket'ов при ресайзе
+
+	// Контроль изменений
+	clearSeq uint64 // Для обнаружения очистки map во время итерации
 }
 
 // bucketShift returns 1<<b, optimized for code generation.
 func bucketShift(b uint8) uintptr {
 	// Masking the shift amount allows overflow checks to be elided.
+	// Маскирование сдвига позволяет пропустить проверки на переполнение
+	// goarch.PtrSize*8 - 1: на 64-битной = 8*8-1 = 63, на 32-битной = 4*8-1 = 31
+	// b & маска: гарантирует, что сдвиг не превысит разрядность системы
 	return uintptr(1) << (b & (goarch.PtrSize*8 - 1))
 }
 
 // bucketMask returns 1<<b - 1, optimized for code generation.
-func bucketMask(b uint8) uintptr {
+func bucketMask(b uint8) uintptr { // Возвращает маску для вычисления индекса bucket'а
+	// Например: b=3 → 1<<3 - 1 = 8 - 1 = 7 (двоичное 0b0111)
+	// Используется как hash & mask для определения индекса bucket'а
 	return bucketShift(b) - 1
 }
 
 // tophash calculates the tophash value for hash.
-func tophash(hash uintptr) uint8 {
+func tophash(hash uintptr) uint8 { // Вычисляет tophash значение из хэша
+	// hash >> (goarch.PtrSize*8 - 8): сдвигаем хэш, чтобы оставить верхний байт
+	// На 64-битной: hash >> 56, на 32-битной: hash >> 24
 	top := uint8(hash >> (goarch.PtrSize*8 - 8))
+	// minTopHash = 5: значения 0-4 зарезервированы для специальных флагов
 	if top < minTopHash {
+		// Если верхний байт меньше 5, добавляем 5, чтобы не конфликтовать со спецзначениями
 		top += minTopHash
 	}
 	return top
 }
 
+// Проверяет, эвакуирован ли bucket (при ресайзе мапы)
 func evacuated(b *bmap) bool {
+	// Берем значение первого слота tophash
 	h := b.tophash[0]
+	// emptyOne = 1, minTopHash = 5
+	// evacuatedX = 2, evacuatedY = 3, evacuatedEmpty = 4
+	// Если tophash[0] между 2 и 4 включительно → bucket эвакуирован
 	return h > emptyOne && h < minTopHash
 }
 
+// Возвращает overflow bucket
 func (b *bmap) overflow(t *maptype) *bmap {
+	// t.BucketSize - полный размер структуры bmap в байтах
+	// goarch.PtrSize - размер указателя (8 байт на 64-битной)
+	// uintptr(t.BucketSize)-goarch.PtrSize: смещение указателя на overflow
+	// add: прибавляет смещение к указателю на b
+	// *(**bmap): читаем указатель на bmap (двойной указатель: сначала разыменовываем до *bmap, потом до bmap)
 	return *(**bmap)(add(unsafe.Pointer(b), uintptr(t.BucketSize)-goarch.PtrSize))
 }
 
 func (b *bmap) setoverflow(t *maptype, ovf *bmap) {
+	// Аналогично overflow(), но записываем значение ovf по адресу указателя overflow
 	*(**bmap)(add(unsafe.Pointer(b), uintptr(t.BucketSize)-goarch.PtrSize)) = ovf
 }
 
+// keys returns a pointer to the keys array in the bucket.
+// keys возвращает указатель на начало массива ключей в bucket'е
 func (b *bmap) keys() unsafe.Pointer {
+	// dataOffset - смещение массива ключей от начала структуры bmap
+	// Обычно равно 8 байт (размер tophash[8]), но зависит от выравнивания
 	return add(unsafe.Pointer(b), dataOffset)
 }
 
@@ -272,25 +321,44 @@ func (h *hmap) newoverflow(t *maptype, b *bmap) *bmap {
 	return ovf
 }
 
+// приамбула
+/*
+Щас мы прочесываем мапы даже если ключи/значения без указателей.
+Это нужно, потому что overflow buckets (бакеты переполнения) висят на основной таблице.
+Это изменение вводит отдельный массив, который хранит указатели на все overflow buckets и держит их живыми.
+Сами buckets помечаются как не содержащие указателей и не сканируются GC (если ключи/значения без указателей).
+
+Это ставит мапы в один ряд со срезами и каналами — GC не сканирует их содержимое, если элементы не содержат указателей.
+
+Сейчас сканирование мапы map[int]int с 200 миллионами записей (~8GB памяти) занимает ~8 секунд.
+С этим изменением сканирование занимает ничтожное время.
+
+*/
 func (h *hmap) createOverflow() {
-	if h.extra == nil {
-		h.extra = new(mapextra)
+	if h.extra == nil { // если у нас небыло екстра поля под переполненные бакеты с указателем
+		h.extra = new(mapextra) // создаем
 	}
 	if h.extra.overflow == nil {
-		h.extra.overflow = new([]*bmap)
+		h.extra.overflow = new([]*bmap) // массив указателей на бакеты
 	}
 }
 
+// makemap64 создает новую мапу с 64-битным hint (предварительным размером)
+// Это обертка для makemap, которая обрабатывает случаи, когда hint не влезает в int
 func makemap64(t *maptype, hint int64, h *hmap) *hmap {
+	// Проверяем, можно ли безопасно преобразовать int64 в int без потери данных
 	if int64(int(hint)) != hint {
+		// Если преобразование теряет данные (например, на 32-битной системе),
+		// устанавливаем hint = 0, чтобы избежать переполнения
 		hint = 0
 	}
+	// Вызываем основную функцию создания мапы с преобразованным hint
 	return makemap(t, int(hint), h)
 }
 
-// makemap_small implements Go map creation for make(map[k]v) and
-// make(map[k]v, hint) when hint is known to be at most bucketCnt
-// at compile time and the map needs to be allocated on the heap.
+// makemap_small создает Go map для make(map[k]v) и make(map[k]v, hint)
+// когда hint известен на этапе компиляции и не превышает bucketCnt (8)
+// и map должна быть выделена в куче (heap)
 //
 // makemap_small should be an internal detail,
 // but widely used packages access it using linkname.
@@ -299,12 +367,14 @@ func makemap64(t *maptype, hint int64, h *hmap) *hmap {
 //
 // Do not remove or change the type signature.
 // See go.dev/issue/67401.
+// оптимизированная функция для создания маленьких мап
+// которые помещаются в один bucket (≤8 элементов).
 //
 //go:linkname makemap_small
 func makemap_small() *hmap {
-	h := new(hmap)
-	h.hash0 = uint32(rand())
-	return h
+	h := new(hmap)           // Выделяем память под структуру map
+	h.hash0 = uint32(rand()) // Инициализируем случайное seed для хэшей
+	return h                 // Возвращаем указатель
 }
 
 // makemap implements Go map creation for make(map[k]v, hint).
@@ -413,7 +483,8 @@ func makeBucketArray(t *maptype, b uint8, dirtyalloc unsafe.Pointer) (buckets un
 // the key is not in the map.
 // NOTE: The returned pointer may keep the whole map live, so don't
 // hold onto it for very long.
-func mapaccess1(t *maptype, h *hmap, key unsafe.Pointer) unsafe.Pointer {
+func mapaccess1(t *maptype, h *hmap, key unsafe.Pointer) unsafe.Pointer { //всегда возвращаеь указатель. если даже ключа нет. Вернем нулевое значение
+	// p.s. указатель будет удерживать всю мапу, поэтому Держать указатель НА элемент мапы ОПАСНО
 	if raceenabled && h != nil {
 		callerpc := sys.GetCallerPC()
 		pc := abi.FuncPCABIInternal(mapaccess1)
@@ -483,7 +554,7 @@ bucketloop:
 // See go.dev/issue/67401.
 //
 //go:linkname mapaccess2
-func mapaccess2(t *maptype, h *hmap, key unsafe.Pointer) (unsafe.Pointer, bool) {
+func mapaccess2(t *maptype, h *hmap, key unsafe.Pointer) (unsafe.Pointer, bool) { //  if value, ok := map[k]v; ok { ... }
 	if raceenabled && h != nil {
 		callerpc := sys.GetCallerPC()
 		pc := abi.FuncPCABIInternal(mapaccess2)
@@ -545,7 +616,7 @@ bucketloop:
 }
 
 // returns both key and elem. Used by map iterator.
-func mapaccessK(t *maptype, h *hmap, key unsafe.Pointer) (unsafe.Pointer, unsafe.Pointer) {
+func mapaccessK(t *maptype, h *hmap, key unsafe.Pointer) (unsafe.Pointer, unsafe.Pointer) { // нужно для key, value := range myMap
 	if h == nil || h.count == 0 {
 		return nil, nil
 	}
@@ -588,6 +659,7 @@ bucketloop:
 	return nil, nil
 }
 
+// для присваивания: val := m[key]
 func mapaccess1_fat(t *maptype, h *hmap, key, zero unsafe.Pointer) unsafe.Pointer {
 	e := mapaccess1(t, h, key)
 	if e == unsafe.Pointer(&zeroVal[0]) {
@@ -596,6 +668,7 @@ func mapaccess1_fat(t *maptype, h *hmap, key, zero unsafe.Pointer) unsafe.Pointe
 	return e
 }
 
+// для проверки: val, ok := m[key]
 func mapaccess2_fat(t *maptype, h *hmap, key, zero unsafe.Pointer) (unsafe.Pointer, bool) {
 	e := mapaccess1(t, h, key)
 	if e == unsafe.Pointer(&zeroVal[0]) {
@@ -608,7 +681,7 @@ func mapaccess2_fat(t *maptype, h *hmap, key, zero unsafe.Pointer) (unsafe.Point
 //
 // mapassign should be an internal detail,
 // but widely used packages access it using linkname.
-// Notable members of the hall of shame include:
+// Notable members of the hall of shame include: ахахахахах
 //   - github.com/bytedance/sonic
 //   - github.com/RomiChan/protobuf
 //   - github.com/segmentio/encoding
@@ -618,7 +691,7 @@ func mapaccess2_fat(t *maptype, h *hmap, key, zero unsafe.Pointer) (unsafe.Point
 // See go.dev/issue/67401.
 //
 //go:linkname mapassign
-func mapassign(t *maptype, h *hmap, key unsafe.Pointer) unsafe.Pointer {
+func mapassign(t *maptype, h *hmap, key unsafe.Pointer) unsafe.Pointer { // m[key] = value
 	if h == nil {
 		panic(plainError("assignment to entry in nil map"))
 	}
@@ -637,6 +710,8 @@ func mapassign(t *maptype, h *hmap, key unsafe.Pointer) unsafe.Pointer {
 	if h.flags&hashWriting != 0 {
 		fatal("concurrent map writes")
 	}
+
+	// вычисляем хеш ключа, где hash0 = это специальный ссид для защит от атак
 	hash := t.Hasher(key, uintptr(h.hash0))
 
 	// Set hashWriting after calling t.hasher, since t.hasher may panic,
@@ -648,11 +723,17 @@ func mapassign(t *maptype, h *hmap, key unsafe.Pointer) unsafe.Pointer {
 	}
 
 again:
+	// определчяем наш бакет по сдвигу
+	// берем 3 младших бита от хеша
 	bucket := hash & bucketMask(h.B)
 	if h.growing() {
 		growWork(t, h, bucket)
 	}
+	// сам бакет находимя по указателю на начало + оффсет от размера бакетов
 	b := (*bmap)(add(h.buckets, bucket*uintptr(t.BucketSize)))
+
+	// потом берем старшие 8 бит хеша для быстрой проверки без сравнения ключей
+	// если он совпадает
 	top := tophash(hash)
 
 	var inserti *uint8
@@ -661,25 +742,27 @@ again:
 bucketloop:
 	for {
 		for i := uintptr(0); i < abi.OldMapBucketCount; i++ {
-			if b.tophash[i] != top {
+			if b.tophash[i] != top { // Проверяем каждый из 8 слотов в бакете
 				if isEmpty(b.tophash[i]) && inserti == nil {
+					// Запоминаем первое пустое место
 					inserti = &b.tophash[i]
-					insertk = add(unsafe.Pointer(b), dataOffset+i*uintptr(t.KeySize))
-					elem = add(unsafe.Pointer(b), dataOffset+abi.OldMapBucketCount*uintptr(t.KeySize)+i*uintptr(t.ValueSize))
+					insertk = add(unsafe.Pointer(b), dataOffset+i*uintptr(t.KeySize))                                         // указатель на место для ключа
+					elem = add(unsafe.Pointer(b), dataOffset+abi.OldMapBucketCount*uintptr(t.KeySize)+i*uintptr(t.ValueSize)) // указатель на место для значения
 				}
 				if b.tophash[i] == emptyRest {
-					break bucketloop
+					break bucketloop // дальше все пусто
 				}
 				continue
 			}
 			k := add(unsafe.Pointer(b), dataOffset+i*uintptr(t.KeySize))
 			if t.IndirectKey() {
-				k = *((*unsafe.Pointer)(k))
+				k = *((*unsafe.Pointer)(k)) // разыменовываем указатель
 			}
 			if !t.Key.Equal(key, k) {
-				continue
+				continue // ключи не равны, продолжаем
 			}
 			// already have a mapping for key. Update it.
+			// Нашли существующий ключ — обновляем значение
 			if t.NeedKeyUpdate() {
 				typedmemmove(t.Key, k, key)
 			}
@@ -696,6 +779,7 @@ bucketloop:
 	// Did not find mapping for key. Allocate new cell & add entry.
 
 	// If we hit the max load factor or we have too many overflow buckets,
+	// //если у нас макс лоад фактор или слишком много переполненных бакетов
 	// and we're not already in the middle of growing, start growing.
 	if !h.growing() && (overLoadFactor(h.count+1, h.B) || tooManyOverflowBuckets(h.noverflow, h.B)) {
 		hashGrow(t, h)
@@ -744,7 +828,7 @@ done:
 // See go.dev/issue/67401.
 //
 //go:linkname mapdelete
-func mapdelete(t *maptype, h *hmap, key unsafe.Pointer) {
+func mapdelete(t *maptype, h *hmap, key unsafe.Pointer) { // удаление элемента из мапы
 	if raceenabled && h != nil {
 		callerpc := sys.GetCallerPC()
 		pc := abi.FuncPCABIInternal(mapdelete)
@@ -879,27 +963,34 @@ search:
 // See go.dev/issue/67401.
 //
 //go:linkname mapiterinit
-func mapiterinit(t *maptype, h *hmap, it *hiter) {
+func mapiterinit(t *maptype, h *hmap, it *hiter) { // инициализация итераторе. пупупуп
 	if raceenabled && h != nil {
 		callerpc := sys.GetCallerPC()
 		racereadpc(unsafe.Pointer(h), callerpc, abi.FuncPCABIInternal(mapiterinit))
 	}
 
-	it.t = t
+	it.t = t // Сохраняем тип map
 	if h == nil || h.count == 0 {
-		return
+		return // Пустая map - итератор ничего не делает
 	}
 
 	if unsafe.Sizeof(hiter{}) != 8+12*goarch.PtrSize {
 		throw("hash_iter size incorrect") // see cmd/compile/internal/reflectdata/reflect.go
 	}
-	it.h = h
-	it.clearSeq = h.clearSeq
+	// hiter должна иметь фиксированный размер, чтобы компилятор и runtime
+	// были согласованы. Если размер изменился - это критическая ошибка.
+
+	it.h = h                 // Ссылка на map
+	it.clearSeq = h.clearSeq // Для обнаружения очистки map во время итерации
 
 	// grab snapshot of bucket state
-	it.B = h.B
-	it.buckets = h.buckets
+
+	// Фиксируем текущее состояние на момент начала итерации
+	it.B = h.B             // Текущий размер map
+	it.buckets = h.buckets // Текущие bucket'ы
 	if !t.Bucket.Pointers() {
+		// Если bucket не содержит указателей (например, map[int]int)
+
 		// Allocate the current slice and remember pointers to both current and old.
 		// This preserves all relevant overflow buckets alive even if
 		// the table grows and/or overflow buckets are added to the table
@@ -908,10 +999,16 @@ func mapiterinit(t *maptype, h *hmap, it *hiter) {
 		it.overflow = h.extra.overflow
 		it.oldoverflow = h.extra.oldoverflow
 	}
+	// Запоминаем overflow bucket'ы, чтобы GC не удалил их
+	// во время итерации (так как на них нет обычных указателей)
 
 	// decide where to start
-	r := uintptr(rand())
+	r := uintptr(rand()) // наше каверзное место
+
+	// bucketMask(h.B) возвращает (1<<B)-1 - маску для младших B бит
+	// r & mask: берем младшие B бит случайного числа
 	it.startBucket = r & bucketMask(h.B)
+
 	it.offset = uint8(r >> h.B & (abi.OldMapBucketCount - 1))
 
 	// iterator state
@@ -1068,7 +1165,7 @@ next:
 
 // mapclear deletes all keys from a map.
 // It is called by the compiler.
-func mapclear(t *maptype, h *hmap) {
+func mapclear(t *maptype, h *hmap) { // clear(map, key ?)
 	if raceenabled && h != nil {
 		callerpc := sys.GetCallerPC()
 		pc := abi.FuncPCABIInternal(mapclear)
@@ -1161,7 +1258,8 @@ func hashGrow(t *maptype, h *hmap) {
 
 // overLoadFactor reports whether count items placed in 1<<B buckets is over loadFactor.
 func overLoadFactor(count int, B uint8) bool {
-	return count > abi.OldMapBucketCount && uintptr(count) > loadFactorNum*(bucketShift(B)/loadFactorDen)
+	// если элементов больше, чем  бакетов задано и каунт больше, чем лодфактр
+	return count > abi.OldMapBucketCount && uintptr(count) > loadFactorNum*(bucketShift(B)/loadFactorDen) // 13 / 2 = 6.5 элементов на бакет
 }
 
 // tooManyOverflowBuckets reports whether noverflow buckets is too many for a map with 1<<B buckets.

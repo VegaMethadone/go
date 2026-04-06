@@ -19,6 +19,7 @@ const (
 	loadFactorDen = 8
 )
 
+// swiss map type
 type maptype = abi.SwissMapType
 
 //go:linkname maps_errNilAssign internal/runtime/maps.errNilAssign

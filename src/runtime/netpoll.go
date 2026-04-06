@@ -97,7 +97,7 @@ type pollDesc struct {
 
 	// rg, wg are accessed atomically and hold g pointers.
 	// (Using atomic.Uintptr here is similar to using guintptr elsewhere.)
-	rg atomic.Uintptr // pdReady, pdWait, G waiting for read or pdNil
+	rg atomic.Uintptr // pdReady, pdWait, G waiting for read or pdNil // указатель на горутину ?
 	wg atomic.Uintptr // pdReady, pdWait, G waiting for write or pdNil
 
 	lock    mutex // protects the following fields

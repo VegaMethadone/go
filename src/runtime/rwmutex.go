@@ -66,16 +66,17 @@ func (rw *rwmutex) init(readRank, readRankInternal, writeRank lockRank) {
 
 const rwmutexMaxReaders = 1 << 30
 
+// внутренний метод реализации rwMutex для рантайма
 // rlock locks rw for reading.
 func (rw *rwmutex) rlock() {
 	// The reader must not be allowed to lose its P or else other
 	// things blocking on the lock may consume all of the Ps and
 	// deadlock (issue #20903). Alternatively, we could drop the P
 	// while sleeping.
-	acquireLockRankAndM(rw.readRank)
+	acquireLockRankAndM(rw.readRank) // увеличиваем счетчик атомарно
 	lockWithRankMayAcquire(&rw.rLock, getLockRank(&rw.rLock))
 
-	if rw.readerCount.Add(1) < 0 {
+	if rw.readerCount.Add(1) < 0 { // если счетчик у нас отрицательный, есть те, кто пишут. Иначе у нас читают или 0
 		// A writer is pending. Park on the reader queue.
 		systemstack(func() {
 			lock(&rw.rLock)

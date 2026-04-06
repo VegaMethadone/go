@@ -17,7 +17,7 @@ func lockInit(l *mutex, rank lockRank) {
 }
 
 func getLockRank(l *mutex) lockRank {
-	return 0
+	return 0 // заглушка ? или lockRankUnknown lockRank = iota, где type lockRank int
 }
 
 func lockWithRank(l *mutex, rank lockRank) {

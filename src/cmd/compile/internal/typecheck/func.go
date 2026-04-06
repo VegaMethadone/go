@@ -697,7 +697,7 @@ func tcPanic(n *ir.UnaryExpr) ir.Node {
 }
 
 // tcPrint typechecks an OPRINT or OPRINTN node.
-func tcPrint(n *ir.CallExpr) ir.Node {
+func tcPrint(n *ir.CallExpr) ir.Node { // тайп чек принт
 	typecheckargs(n)
 	ls := n.Args
 	for i1, n1 := range ls {

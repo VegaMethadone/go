@@ -17,7 +17,7 @@ import (
 // or the functions in compiletype.go to access this type instead.
 // (TODO: this admonition applies to every type in this package.
 // Put it in some shared location?)
-type Type struct {
+type Type struct { // тип всез типов ?
 	Size_       uintptr
 	PtrBytes    uintptr // number of (prefix) bytes in the type that can contain pointers
 	Hash        uint32  // hash of type; avoids computation in hash tables

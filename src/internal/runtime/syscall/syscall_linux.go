@@ -14,8 +14,8 @@ import (
 // only contains very minimal support for Linux.
 
 // Syscall6 calls system call number 'num' with arguments a1-6.
-func Syscall6(num, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2, errno uintptr)
-
+func Syscall6(num, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2, errno uintptr) // очередной интринсик
+// создание экземпляра epoll, который будет закрыт после испольнения, получим файловый дескриптор
 func EpollCreate1(flags int32) (fd int32, errno uintptr) {
 	r1, _, e := Syscall6(SYS_EPOLL_CREATE1, uintptr(flags), 0, 0, 0, 0, 0)
 	return int32(r1), e
@@ -39,6 +39,7 @@ func EpollCtl(epfd, op, fd int32, event *EpollEvent) (errno uintptr) {
 	return e
 }
 
+// создаем файловый дескриптор для уведомлений о событиях, где флаги закрывать при exec() и неблокирующий режим
 func Eventfd(initval, flags int32) (fd int32, errno uintptr) {
 	r1, _, e := Syscall6(SYS_EVENTFD2, uintptr(initval), uintptr(flags), 0, 0, 0, 0)
 	return int32(r1), e

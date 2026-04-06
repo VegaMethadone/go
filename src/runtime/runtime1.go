@@ -623,18 +623,19 @@ func timediv(v int64, div int32, rem *int32) int32 {
 }
 
 // Helpers for Go. Must be NOSPLIT, must only call NOSPLIT functions, and must not block.
-
+// директива компилятору, запрещающая добавление проверок разделения стека
+//
 //go:nosplit
 func acquirem() *m {
-	gp := getg()
-	gp.m.locks++
-	return gp.m
+	gp := getg() // интринсик го ассемблера которая вернет указатель на горутину
+	gp.m.locks++ // увеличиваем счетчик блокировок у текущего машиного потока
+	return gp.m  // указатель на машиный поток
 }
 
 //go:nosplit
-func releasem(mp *m) {
-	gp := getg()
-	mp.locks--
+func releasem(mp *m) { // отпускаем наш М
+	gp := getg() // берем текущую горутину
+	mp.locks--   // понижаем ранг лока
 	if mp.locks == 0 && gp.preempt {
 		// restore the preemption request in case we've cleared it in newstack
 		gp.stackguard0 = stackPreempt

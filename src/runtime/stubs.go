@@ -28,6 +28,7 @@ func add(p unsafe.Pointer, x uintptr) unsafe.Pointer {
 // getg returns the pointer to the current g.
 // The compiler rewrites calls to this function into instructions
 // that fetch the g directly (from TLS or from the dedicated register).
+// интринсик фукнция, которая вставит ассемблерный код (для amd64, 386 и arm32 смотри файл go_tls.h)
 func getg() *g
 
 // mcall switches from the g to the g0 stack and invokes fn(g),
@@ -64,7 +65,7 @@ func mcall(fn func(*g))
 //	... use x ...
 //
 //go:noescape
-func systemstack(fn func())
+func systemstack(fn func()) // опять интринсик функиця для вызова функций на системном стеке
 
 //go:nosplit
 //go:nowritebarrierrec
@@ -105,7 +106,7 @@ func badsystemstack() {
 //
 //go:linkname memclrNoHeapPointers
 //go:noescape
-func memclrNoHeapPointers(ptr unsafe.Pointer, n uintptr)
+func memclrNoHeapPointers(ptr unsafe.Pointer, n uintptr) // интринсик, вызывается для
 
 //go:linkname reflect_memclrNoHeapPointers reflect.memclrNoHeapPointers
 func reflect_memclrNoHeapPointers(ptr unsafe.Pointer, n uintptr) {
@@ -142,7 +143,7 @@ func reflect_memclrNoHeapPointers(ptr unsafe.Pointer, n uintptr) {
 //
 //go:linkname memmove
 //go:noescape
-func memmove(to, from unsafe.Pointer, n uintptr)
+func memmove(to, from unsafe.Pointer, n uintptr) // интринсик
 
 //go:linkname reflect_memmove reflect.memmove
 func reflect_memmove(to, from unsafe.Pointer, n uintptr) {
@@ -307,6 +308,8 @@ func goexit(neverCallThisFunction)
 // data dependency ordering.
 func publicationBarrier()
 
+// не участвует в ескеп анализе и не уйдут в кучу
+//
 //go:noescape
 func asmcgocall(fn, arg unsafe.Pointer) int32
 

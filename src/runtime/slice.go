@@ -12,14 +12,18 @@ import (
 	"unsafe"
 )
 
+// Представление слайса в рантайме
 type slice struct {
-	array unsafe.Pointer
-	len   int
-	cap   int
+	array unsafe.Pointer // указатель на дефолтный массив
+	len   int            // какое кол. реальных объектов у нас в массиве
+	cap   int            // сколько мы можем вместить реальных объектов
 }
 
 // A notInHeapSlice is a slice backed by internal/runtime/sys.NotInHeap memory.
-type notInHeapSlice struct {
+// Рантайм не хранит свои структуры в обычной куче
+// т.к. GC бы сканировал объекты, которые не указывали на пользователськие структуры
+// Возникли бы циклы
+type notInHeapSlice struct { // все как в обычном слайсе, кроме нахождения массива вне кучи
 	array *notInHeap
 	len   int
 	cap   int
@@ -98,7 +102,7 @@ func makeslicecopy(et *_type, tolen int, fromlen int, from unsafe.Pointer) unsaf
 // See go.dev/issue/67401.
 //
 //go:linkname makeslice
-func makeslice(et *_type, len, cap int) unsafe.Pointer {
+func makeslice(et *_type, len, cap int) unsafe.Pointer { // функция по созданию слайса из make([]int, 0, 10) ??
 	mem, overflow := math.MulUintptr(et.Size_, uintptr(cap))
 	if overflow || mem > maxAlloc || len < 0 || len > cap {
 		// NOTE: Produce a 'len out of range' error instead of a
@@ -176,13 +180,17 @@ func makeslice64(et *_type, len64, cap64 int64) unsafe.Pointer {
 //go:linkname growslice
 func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) slice {
 	oldLen := newLen - num
+
+	//  не выполнется
 	if raceenabled {
 		callerpc := sys.GetCallerPC()
 		racereadrangepc(oldPtr, uintptr(oldLen*int(et.Size_)), callerpc, abi.FuncPCABIInternal(growslice))
 	}
+	//  не выполнется
 	if msanenabled {
 		msanread(oldPtr, uintptr(oldLen*int(et.Size_)))
 	}
+	//  не выполнется
 	if asanenabled {
 		asanread(oldPtr, uintptr(oldLen*int(et.Size_)))
 	}
@@ -286,27 +294,35 @@ func growslice(oldPtr unsafe.Pointer, newLen, oldCap, num int, et *_type) slice 
 }
 
 // nextslicecap computes the next appropriate slice length.
+// вычисляем некст капасити нашего слайса мать его
 func nextslicecap(newLen, oldCap int) int {
-	newcap := oldCap
-	doublecap := newcap + newcap
-	if newLen > doublecap {
+	newcap := oldCap             // смотрим старую емкость
+	doublecap := newcap + newcap // удваиваем емкость, как бонально
+	if newLen > doublecap {      // вернем столько, сколько надо.... Прям точь в точь
 		return newLen
 	}
 
-	const threshold = 256
-	if oldCap < threshold {
-		return doublecap
+	const threshold = 256   // пороговое значение
+	if oldCap < threshold { // если емкость меньше порога
+		return doublecap // слайс маленький, можно удводить - похуй
 	}
-	for {
+	for { // иначе уже у нас большой слайс
 		// Transition from growing 2x for small slices
 		// to growing 1.25x for large slices. This formula
 		// gives a smooth-ish transition between the two.
-		newcap += (newcap + 3*threshold) >> 2
+		// Эта формула дает плавный переход между ростом в 2 раза (для маленьких)
+		// и ростом в 1.25 раза (для больших срезов)
+		newcap += (newcap + 3*threshold) >> 2 // (newcap + 768) / 4 (битовый сдвиг вправо на 2  ( >> 2))
 
 		// We need to check `newcap >= newLen` and whether `newcap` overflowed.
 		// newLen is guaranteed to be larger than zero, hence
 		// when newcap overflows then `uint(newcap) > uint(newLen)`.
 		// This allows to check for both with the same comparison.
+
+		// Проверяем два условия одним сравнением:
+		// 1. newcap >= newLen (достигли нужной длины)
+		// 2. newcap не переполнился (если newcap отрицательный после переполнения,
+		//    то uint(newcap) будет большим числом > newLen)
 		if uint(newcap) >= uint(newLen) {
 			break
 		}
@@ -314,8 +330,9 @@ func nextslicecap(newLen, oldCap int) int {
 
 	// Set newcap to the requested cap when
 	// the newcap calculation overflowed.
+	// если у нас все таки стало переполнение
 	if newcap <= 0 {
-		return newLen
+		return newLen // Возвращаем минимально необходимую длину
 	}
 	return newcap
 }
@@ -328,22 +345,38 @@ func nextslicecap(newLen, oldCap int) int {
 // Do not remove or change the type signature.
 // See go.dev/issue/67401.
 //
+// Специальная версия grow_slice для пакета рефлект.
+// reflect использует внутренние функции рантайма через go:linkname
+//
 //go:linkname reflect_growslice reflect.growslice
 func reflect_growslice(et *_type, old slice, num int) slice {
 	// Semantically equivalent to slices.Grow, except that the caller
 	// is responsible for ensuring that old.len+num > old.cap.
-	num -= old.cap - old.len // preserve memory of old[old.len:old.cap]
+
+	// Семантически эквивалентно slices.Grow, за исключением того, что вызывающая сторона
+	// отвечает за обеспечение того, что old.len+num > old.cap.
+
+	// Вычисляем, сколько новых элементов действительно нужно добавить
+	num -= old.cap - old.len // сохраняем память old[old.len:old.cap]
+
+	// Вызываем внутреннюю функцию growslice рантайма
 	new := growslice(old.array, old.cap+num, old.cap, num, et)
 	// growslice does not zero out new[old.cap:new.len] since it assumes that
 	// the memory will be overwritten by an append() that called growslice.
 	// Since the caller of reflect_growslice is not append(),
 	// zero out this region before returning the slice to the reflect package.
+
+	// growslice не обнуляет new[old.cap:new.len], поскольку предполагает,
+	// что память будет перезаписана append(), который вызвал growslice.
+	// Поскольку вызывающая сторона reflect_growslice - не append(),
+	// обнуляем эту область перед возвратом среза в пакет reflect.
 	if !et.Pointers() {
 		oldcapmem := uintptr(old.cap) * et.Size_
 		newlenmem := uintptr(new.len) * et.Size_
 		memclrNoHeapPointers(add(new.array, oldcapmem), newlenmem-oldcapmem)
 	}
-	new.len = old.len // preserve the old length
+	// Восстанавливаем старую длину (growslice устанавливает новую длину равной новой емкости)
+	new.len = old.len // сохраняем старую длину
 	return new
 }
 

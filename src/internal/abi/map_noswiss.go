@@ -12,8 +12,8 @@ import (
 // runtime/runtime-gdb.py:MapTypePrinter contains its own copy
 const (
 	// Maximum number of key/elem pairs a bucket can hold.
-	OldMapBucketCountBits = 3 // log2 of number of elements in a bucket.
-	OldMapBucketCount     = 1 << OldMapBucketCountBits
+	OldMapBucketCountBits = 3                          // log2 of number of elements in a bucket. // log2(8) = 3
+	OldMapBucketCount     = 1 << OldMapBucketCountBits // 1 << 3 = 8
 
 	// Maximum key or elem size to keep inline (instead of mallocing per element).
 	// Must fit in a uint8.
@@ -22,16 +22,17 @@ const (
 	OldMapMaxElemBytes = 128 // Must fit in a uint8.
 )
 
+// тип мапы
 type OldMapType struct {
-	Type
-	Key    *Type
-	Elem   *Type
-	Bucket *Type // internal type representing a hash bucket
+	Type         // embeded
+	Key    *Type // ключ
+	Elem   *Type // значение
+	Bucket *Type // internal type representing a hash bucket // бакет тайп ?
 	// function for hashing keys (ptr to key, seed) -> hash
-	Hasher     func(unsafe.Pointer, uintptr) uintptr
-	KeySize    uint8  // size of key slot
-	ValueSize  uint8  // size of elem slot
-	BucketSize uint16 // size of bucket
+	Hasher     func(unsafe.Pointer, uintptr) uintptr // хешер функция
+	KeySize    uint8                                 // size of a key slot
+	ValueSize  uint8                                 // size of an elem slot
+	BucketSize uint16                                // size of bucket
 	Flags      uint32
 }
 

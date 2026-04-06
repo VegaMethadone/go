@@ -646,19 +646,34 @@ func (s *scavengerState) run() (released uintptr, worked float64) {
 // The background scavenger maintains the RSS of the application below
 // the line described by the proportional scavenging statistics in
 // the mheap struct.
-func bgscavenge(c chan int) {
-	scavenger.init()
+/*
+	Процесс возврата неиспользуемой памяти операционной системе.
+	В отличие от сборки мусора (GC), которая освобождает память внутри процесса Go,
+	скавенджинг фактически уменьшает потребление памяти процессом (RSS - Resident Set Size).
+*/
+func bgscavenge(c chan int) { // функция сканирования
+	scavenger.init() // Инициализация скавенджера
 
+	// Сигнализируем, что инициализация завершена
 	c <- 1
+
+	// Первая парковка - ждем, пока понадобится работа
 	scavenger.park()
 
 	for {
+		// Запускаем один цикл работы скавенджера
+		// released - количество байт памяти, возвращенных ОС
+		// workTime - время, затраченное на работу
 		released, workTime := scavenger.run()
+
+		// Если не было возвращено памяти, паркуемся и ждем
 		if released == 0 {
 			scavenger.park()
 			continue
 		}
+		// Обновляем статистику: добавляем количество освобожденной памяти
 		mheap_.pages.scav.releasedBg.Add(released)
+		// засыпаем на время, пропорциональное выполненной работе
 		scavenger.sleep(workTime)
 	}
 }

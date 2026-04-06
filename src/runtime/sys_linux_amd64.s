@@ -623,6 +623,7 @@ nog2:
 	SYSCALL
 	JMP	-3(PC)	// keep exiting
 
+// создания стека для поимки сигналов от OS
 TEXT runtime·sigaltstack(SB),NOSPLIT,$0
 	MOVQ	new+0(FP), DI
 	MOVQ	old+8(FP), SI
@@ -634,19 +635,24 @@ TEXT runtime·sigaltstack(SB),NOSPLIT,$0
 	RET
 
 // set tls base to DI
+// настраиваем  Thread-Local Storage для потока в линуксе
 TEXT runtime·settls(SB),NOSPLIT,$32
 #ifdef GOOS_android
 	// Android stores the TLS offset in runtime·tls_g.
-	SUBQ	runtime·tls_g(SB), DI
+	// DI содержит адрес, который мы будем использовать как для TLS
+	SUBQ	runtime·tls_g(SB), DI //  Почему андроид, если linux_amd64 ?
 #else
-	ADDQ	$8, DI	// ELF wants to use -8(FS)
+	// Мы хотим: -8(FS) → 0x1000 (адрес нашей структуры)
+	// Значит: FS.base = 0x1000 + 8 = 0x1008
+	// Тогда: -8(FS) = FS.base - 8 = 0x1008 - 8 = 0x1000
+	ADDQ	$8, DI	// ELF wants to use -8(FS) исторически сложилось в ELF (Executable and Linkable Format). Чертова история
 #endif
-	MOVQ	DI, SI
-	MOVQ	$0x1002, DI	// ARCH_SET_FS
-	MOVQ	$SYS_arch_prctl, AX
-	SYSCALL
+	MOVQ	DI, SI // SI будет содержать второй аргумент DI
+	MOVQ	$0x1002, DI	// ARCH_SET_FS // DI будект содержать ARCH_SET_FS
+	MOVQ	$SYS_arch_prctl, AX // #define SYS_arch_prctl		158
+	SYSCALL // системный вызов. Читаем номер системного вызова из RAX и результат туда же
 	CMPQ	AX, $0xfffffffffffff001
-	JLS	2(PC)
+	JLS	2(PC)	// проверка, если меньше - все заебись
 	MOVL	$0xf1, 0xf1  // crash
 	RET
 

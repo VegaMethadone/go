@@ -311,12 +311,12 @@ func walkMakeChan(n *ir.MakeExpr, init *ir.Nodes) ir.Node {
 	return mkcall1(chanfn(fnname, 1, n.Type()), n.Type(), init, reflectdata.MakeChanRType(base.Pos, n), typecheck.Conv(size, argtype))
 }
 
-// walkMakeMap walks an OMAKEMAP node.
+// walkMakeMap walks an OMAKEMAP node. // make(ma[T]U, 10)
 func walkMakeMap(n *ir.MakeExpr, init *ir.Nodes) ir.Node {
 	if buildcfg.Experiment.SwissMap {
-		return walkMakeSwissMap(n, init)
+		return walkMakeSwissMap(n, init) // если ксперементал, делают свисс мап
 	}
-	return walkMakeOldMap(n, init)
+	return walkMakeOldMap(n, init) // иначе дефолтная мапа
 }
 
 func walkMakeSwissMap(n *ir.MakeExpr, init *ir.Nodes) ir.Node {
@@ -429,24 +429,28 @@ func walkMakeSwissMap(n *ir.MakeExpr, init *ir.Nodes) ir.Node {
 }
 
 func walkMakeOldMap(n *ir.MakeExpr, init *ir.Nodes) ir.Node {
+	// t - тип создаваемой мапы (например, map[string]int)
 	t := n.Type()
+
+	// hmapType - тип runtime.hmap структуры (внутреннее представление мапы)
 	hmapType := reflectdata.OldMapType()
+	// hint - ожидаемое количество элементов (второй аргумент make)
 	hint := n.Len
 
-	// var h *hmap
+	// var h *hmap - указатель на hmap структуру
 	var h ir.Node
+	// Анализ escape-анализа: если мапа не утекает из функции (EscNone)
+	// то мы можем выделить память на стеке для hmap
 	if n.Esc() == ir.EscNone {
-		// Allocate hmap on stack.
-
+		// Выделение hmap на стеке
 		// var hv hmap
 		// h = &hv
-		h = stackTempAddr(init, hmapType)
+		h = stackTempAddr(init, hmapType) // создаем временную переменную на стеке
 
-		// Allocate one bucket pointed to by hmap.buckets on stack if hint
-		// is not larger than BUCKETSIZE. In case hint is larger than
-		// BUCKETSIZE runtime.makemap will allocate the buckets on the heap.
-		// Maximum key and elem size is 128 bytes, larger objects
-		// are stored with an indirection. So max bucket size is 2048+eps.
+		// Если hint - константа и не превышает BUCKETSIZE (8 элементов),
+		// или hint - не константа (переменная), то мы можем выделить
+		// один бакет на стеке. Для hint > BUCKETSIZE бакеты будут
+		// выделены в куче через runtime.makemap
 		if !ir.IsConst(hint, constant.Int) ||
 			constant.Compare(hint.Val(), token.LEQ, constant.MakeInt64(abi.OldMapBucketCount)) {
 
@@ -498,7 +502,8 @@ func walkMakeOldMap(n *ir.MakeExpr, init *ir.Nodes) ir.Node {
 	}
 
 	if n.Esc() != ir.EscNone {
-		h = typecheck.NodNil()
+		// В куче (через runtime)
+		h = typecheck.NodNil() // nil, чтобы runtime выделил память
 	}
 	// Map initialization with a variable or large hint is
 	// more complicated. We therefore generate a call to
@@ -523,6 +528,7 @@ func walkMakeOldMap(n *ir.MakeExpr, init *ir.Nodes) ir.Node {
 	return mkcall1(fn, n.Type(), init, reflectdata.MakeMapRType(base.Pos, n), typecheck.Conv(hint, argtype), h)
 }
 
+// это функиця make([]int, 0, 10) ??
 // walkMakeSlice walks an OMAKESLICE node.
 func walkMakeSlice(n *ir.MakeExpr, init *ir.Nodes) ir.Node {
 	len := n.Len
@@ -580,7 +586,7 @@ func walkMakeSlice(n *ir.MakeExpr, init *ir.Nodes) ir.Node {
 		// K := maxStackSize/sizeof(E)
 		// if cap <= K {
 		//     var arr [K]E
-		//     slice = arr[:len:cap]
+		//     slice = arr[:len:cap] // wtf ?????
 		// } else {
 		//     slice = makeslice(elemType, len, cap)
 		// }

@@ -372,6 +372,7 @@ var (
 	physHugePageShift uint
 )
 
+// инициализация маллока
 func mallocinit() {
 	if gc.SizeClassToSize[tinySizeClass] != maxTinySize {
 		throw("bad TinySizeClass")
@@ -1009,6 +1010,7 @@ const doubleCheckMalloc = false
 //
 // Do not remove or change the type signature.
 // See go.dev/issue/67401.
+// видимо это главная точка входа для аллокации
 //
 //go:linkname mallocgc
 func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
@@ -1743,7 +1745,7 @@ func memclrNoHeapPointersChunked(size uintptr, x unsafe.Pointer) {
 // implementation of new builtin
 // compiler (both frontend and SSA backend) knows the signature
 // of this function.
-func newobject(typ *_type) unsafe.Pointer {
+func newobject(typ *_type) unsafe.Pointer { // функция new() которая заменяется рантаймом ? runtime.newobject() вместо
 	return mallocgc(typ.Size_, typ, true)
 }
 
@@ -1903,21 +1905,24 @@ const persistentChunkSize = 256 << 10
 // persistent chunk. This is updated atomically.
 var persistentChunks *notInHeap
 
-// Wrapper around sysAlloc that can allocate small chunks.
-// There is no associated free operation.
-// Intended for things like function/type/debug-related persistent data.
-// If align is 0, uses default align (currently 8).
-// The returned memory will be zeroed.
-// sysStat must be non-nil.
+// Обёртка вокруг sysAlloc, которая может выделять небольшие блоки памяти.
+// Не имеет операции освобождения (free).
+// Предназначена для персистентных данных: функций, типов, отладочной информации.
+// Если align=0, использует выравнивание по умолчанию (сейчас 8 байт).
+// Возвращаемая память будет обнулена (zeroed).
+// sysStat должен быть не-nil (для учёта статистики памяти).
 //
-// Consider marking persistentalloc'd types not in heap by embedding
-// internal/runtime/sys.NotInHeap.
+// Рекомендуется помечать типы, выделенные через persistentalloc, как NotInHeap,
+// чтобы сборщик мусора их не сканировал.
 //
-// nosplit because it is used during write barriers and must not be preempted.
+// go:nosplit - функция не может быть прервана, т.к. используется во время
+// барьеров записи (write barriers).
 //
 //go:nosplit
 func persistentalloc(size, align uintptr, sysStat *sysMemStat) unsafe.Pointer {
-	var p *notInHeap
+	var p *notInHeap // Указатель на память, которая не в куче
+
+	// Выполняем на системном стеке (нельзя прерывать)
 	systemstack(func() {
 		p = persistentalloc1(size, align, sysStat)
 	})
@@ -2061,6 +2066,9 @@ func (l *linearAlloc) alloc(size, align uintptr, sysStat *sysMemStat, vmaName st
 // for situations where that isn't possible (like in the allocators).
 //
 // TODO: Use this as the return type of sysAlloc, persistentAlloc, etc?
+// Эта структура не сканируется сборщиком мусора.
+// Не содержит указателей на управляемую память, выделяется напрямую из OS
+// Только для внутренней структуры рантайма
 type notInHeap struct{ _ sys.NotInHeap }
 
 func (p *notInHeap) add(bytes uintptr) *notInHeap {

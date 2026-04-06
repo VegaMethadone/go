@@ -168,20 +168,25 @@ const (
 func clone(flags int32, stk, mp, gp, fn unsafe.Pointer) int32
 
 // May run with m.p==nil, so write barriers are not allowed.
+// Опять отказываемся от барьера записи, потому что барьеры записи требуют
+// наличия P, поэтому их использование в этом контексте небезопасно.
 //
 //go:nowritebarrier
 func newosproc(mp *m) {
+	// берем инфяормацию о верхней границе системном стеке нашей системной горутины с нашей (м)
 	stk := unsafe.Pointer(mp.g0.stack.hi)
 	/*
 	 * note: strace gets confused if we use CLONE_PTRACE here.
 	 */
-	if false {
+	if false { // для дебага, мертвый код
 		print("newosproc stk=", stk, " m=", mp, " g=", mp.g0, " clone=", abi.FuncPCABI0(clone), " id=", mp.id, " ostk=", &mp, "\n")
 	}
 
 	// Disable signals during clone, so that the new thread starts
 	// with signals disabled. It will enable them in minit.
 	var oset sigset
+	// блокировка всех сигналов
+	// Сохраняем текущую маску в oset, устанавливаем новую маску sigset_all опять через инстринскики
 	sigprocmask(_SIG_SETMASK, &sigset_all, &oset)
 	ret := retryOnEAGAIN(func() int32 {
 		r := clone(cloneFlags, stk, unsafe.Pointer(mp), unsafe.Pointer(mp.g0), unsafe.Pointer(abi.FuncPCABI0(mstart)))
@@ -353,6 +358,7 @@ func getHugePageSize() uintptr {
 	return uintptr(v)
 }
 
+// вызов ассемблером
 func osinit() {
 	numCPUStartup = getCPUCount()
 	physHugePageSize = getHugePageSize()
@@ -397,12 +403,12 @@ func gettid() uint32
 // Called to initialize a new m (including the bootstrap m).
 // Called on the new thread, cannot allocate memory.
 func minit() {
-	minitSignals()
+	minitSignals() // настройка сигналов
 
 	// Cgo-created threads and the bootstrap m are missing a
 	// procid. We need this for asynchronous preemption and it's
 	// useful in debuggers.
-	getg().m.procid = uint64(gettid())
+	getg().m.procid = uint64(gettid()) // Установка ID треда OS
 }
 
 // Called from dropm to undo the effect of an minit.
@@ -431,7 +437,7 @@ func sigtramp() // Called via C ABI
 func cgoSigtramp()
 
 //go:noescape
-func sigaltstack(new, old *stackt)
+func sigaltstack(new, old *stackt) // интринсик
 
 //go:noescape
 func setitimer(mode int32, new, old *itimerval)

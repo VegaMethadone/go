@@ -72,6 +72,10 @@ type Context interface {
 	// Deadline returns the time when work done on behalf of this context
 	// should be canceled. Deadline returns ok==false when no deadline is
 	// set. Successive calls to Deadline return the same results.
+
+	// Определяет время жизни нашего канала.
+	// Вернем ok==false в том случае, когда  дедлайна не было.
+	// возвращает время, когда работа должна быть отменена
 	Deadline() (deadline time.Time, ok bool)
 
 	// Done returns a channel that's closed when work done on behalf of this
@@ -105,6 +109,8 @@ type Context interface {
 	//
 	// See https://blog.golang.org/pipelines for more examples of how to use
 	// a Done channel for cancellation.
+
+	// возвращает канал, закрываемый при отмене контекста
 	Done() <-chan struct{}
 
 	// If Done is not yet closed, Err returns nil.
@@ -112,6 +118,8 @@ type Context interface {
 	// DeadlineExceeded if the context's deadline passed,
 	// or Canceled if the context was canceled for some other reason.
 	// After Err returns a non-nil error, successive calls to Err return the same error.
+
+	// возвращает ошибку отмены (либо nil, если контекст активен)
 	Err() error
 
 	// Value returns the value associated with this context for key, or nil
@@ -159,289 +167,410 @@ type Context interface {
 	// 		u, ok := ctx.Value(userKey).(*User)
 	// 		return u, ok
 	// 	}
+	// возвращает значение, связанное с ключом
 	Value(key any) any
 }
 
-// Canceled is the error returned by [Context.Err] when the context is canceled
-// for some reason other than its deadline passing.
+// Canceled - глобальная переменная ошибки, возвращаемая Context.Err()
+// когда контекст отменен по причине, отличной от истечения дедлайна
+// (например, при явном вызове cancel() или отмене родительского контекста)
 var Canceled = errors.New("context canceled")
 
-// DeadlineExceeded is the error returned by [Context.Err] when the context is canceled
-// due to its deadline passing.
+// DeadlineExceeded - глобальная переменная ошибки, возвращаемая Context.Err()
+// когда контекст отменен из-за истечения установленного дедлайна
 var DeadlineExceeded error = deadlineExceededError{}
 
+// deadlineExceededError - внутренний тип, реализующий интерфейс error
+// с дополнительными методами Timeout() и Temporary()
 type deadlineExceededError struct{}
 
-func (deadlineExceededError) Error() string   { return "context deadline exceeded" }
-func (deadlineExceededError) Timeout() bool   { return true }
+// Error() возвращает текстовое описание ошибки
+func (deadlineExceededError) Error() string { return "context deadline exceeded" }
+
+// Timeout() возвращает true, указывая что это ошибка таймаута
+// Это полезно для проверки типа ошибки (пакет net использует это)
+
+func (deadlineExceededError) Timeout() bool { return true }
+
+// Temporary() возвращает true, указывая что это временная ошибка
+// (можно попробовать операцию снова)
 func (deadlineExceededError) Temporary() bool { return true }
 
-// An emptyCtx is never canceled, has no values, and has no deadline.
-// It is the common base of backgroundCtx and todoCtx.
+// emptyCtx - базовая реализация контекста, которая никогда не отменяется,
+// не имеет значений и дедлайна. Является основой для backgroundCtx и todoCtx
+// (Этот тип используется для Background() и TODO() контекстов)
 type emptyCtx struct{}
 
+// Deadline() возвращает нулевое время и false, так как у emptyCtx нет дедлайна
 func (emptyCtx) Deadline() (deadline time.Time, ok bool) {
+	// p.s. если в тьюпле указаные индефикаторы
+	// то го их проинициализирует дефолтными значениями и вернет без явного указания в return pog
 	return
 }
 
+// Done() возвращает nil, так как emptyCtx никогда не отменяется
+// Канал, который никогда не закрывается - операции с ним будут вечно ждать
 func (emptyCtx) Done() <-chan struct{} {
 	return nil
 }
 
+// Err() всегда возвращает nil, так как контекст никогда не отменяется
 func (emptyCtx) Err() error {
 	return nil
 }
 
+// Value() всегда возвращает nil, так как emptyCtx не хранит значений
 func (emptyCtx) Value(key any) any {
 	return nil
 }
 
+// backgroundCtx - структура для корневого контекста
+// Встраивает emptyCtx, получая все его методы (Deadline, Done, Err, Value)
 type backgroundCtx struct{ emptyCtx }
 
+// String() определяет строковое представление для отладки и логирования
+// Вызывается автоматически при fmt.Printf("%v") или fmt.Println()
 func (backgroundCtx) String() string {
 	return "context.Background"
 }
 
+// todoCtx - структура для временного контекста-заглушки
+// Аналогично встраивает emptyCtx и наследует его поведение
 type todoCtx struct{ emptyCtx }
 
+// String() определяет строковое представление для отладки и логирования
+// Вызывается автоматически при fmt.Printf("%v") или fmt.Println()
 func (todoCtx) String() string {
 	return "context.TODO"
 }
 
-// Background returns a non-nil, empty [Context]. It is never canceled, has no
-// values, and has no deadline. It is typically used by the main function,
-// initialization, and tests, and as the top-level Context for incoming
-// requests.
+// Background возвращает новый пустой контекст без дедлайна и отмены
+// Этот контекст никогда не отменяется, не имеет значений и дедлайна
+// Используется как корневой контекст для создания производных контекстов
 func Background() Context {
 	return backgroundCtx{}
+	// Возвращаемый тип Context (интерфейс), но фактически backgroundCtx
 }
 
-// TODO returns a non-nil, empty [Context]. Code should use context.TODO when
-// it's unclear which Context to use or it is not yet available (because the
-// surrounding function has not yet been extended to accept a Context
-// parameter).
+// TODO возвращает пустой контекст-заглушку
+// Используется как временное решение, когда непонятно какой контекст использовать
+// Или когда функция еще не принимает контекст, но скоро будет доработана
 func TODO() Context {
 	return todoCtx{}
+	// Аналогично возвращается как интерфейс Context
 }
 
-// A CancelFunc tells an operation to abandon its work.
-// A CancelFunc does not wait for the work to stop.
-// A CancelFunc may be called by multiple goroutines simultaneously.
-// After the first call, subsequent calls to a CancelFunc do nothing.
+// CancelFunc - это функция, которая сообщает операции прекратить работу.
+// CancelFunc не ожидает остановки работы (неблокирующая).
+// CancelFunc может вызываться из нескольких горутин одновременно.
+// После первого вызова последующие вызовы CancelFunc ничего не делают.
 type CancelFunc func()
 
-// WithCancel returns a derived context that points to the parent context
-// but has a new Done channel. The returned context's Done channel is closed
-// when the returned cancel function is called or when the parent context's
-// Done channel is closed, whichever happens first.
+// WithCancel создает производный контекст, который ссылается на родительский контекст,
+// но имеет новый канал Done. Канал Done возвращаемого контекста закрывается:
+// 1. При вызове возвращаемой функции cancel
+// 2. Или при закрытии канала Done родительского контекста
+// В зависимости от того, что произойдет раньше.
 //
-// Canceling this context releases resources associated with it, so code should
-// call cancel as soon as the operations running in this [Context] complete.
+// Отмена этого контекста освобождает связанные с ним ресурсы,
+// поэтому код должен вызывать cancel как только операции в этом Context завершены.
 func WithCancel(parent Context) (ctx Context, cancel CancelFunc) {
+	// Создаем cancelCtx и связываем его с родительским контекстом
 	c := withCancel(parent)
-	return c, func() { c.cancel(true, Canceled, nil) }
+
+	// Возвращаем контекст и функцию-обертку для его отмены
+	return c,
+		func() {
+			// true - удалять из родительского контекста
+			// Canceled - тип ошибки (обычная отмена)
+			// nil - нет конкретной причины отмены
+			c.cancel(true, Canceled, nil)
+		}
 }
 
-// A CancelCauseFunc behaves like a [CancelFunc] but additionally sets the cancellation cause.
-// This cause can be retrieved by calling [Cause] on the canceled Context or on
-// any of its derived Contexts.
+// CancelCauseFunc ведет себя как CancelFunc, но дополнительно устанавливает причину отмены.
+// Эту причину можно получить, вызвав Cause на отмененном Context или любом его производном.
 //
-// If the context has already been canceled, CancelCauseFunc does not set the cause.
-// For example, if childContext is derived from parentContext:
-//   - if parentContext is canceled with cause1 before childContext is canceled with cause2,
-//     then Cause(parentContext) == Cause(childContext) == cause1
-//   - if childContext is canceled with cause2 before parentContext is canceled with cause1,
-//     then Cause(parentContext) == cause1 and Cause(childContext) == cause2
+// Если контекст уже был отменен, CancelCauseFunc не устанавливает причину.
+// Пример: если childContext создан из parentContext:
+//   - если parentContext отменен с cause1 до того, как childContext отменен с cause2,
+//     тогда Cause(parentContext) == Cause(childContext) == cause1
+//   - если childContext отменен с cause2 до parentContext отменен с cause1,
+//     тогда Cause(parentContext) == cause1 и Cause(childContext) == cause2
 type CancelCauseFunc func(cause error)
 
-// WithCancelCause behaves like [WithCancel] but returns a [CancelCauseFunc] instead of a [CancelFunc].
-// Calling cancel with a non-nil error (the "cause") records that error in ctx;
-// it can then be retrieved using Cause(ctx).
-// Calling cancel with nil sets the cause to Canceled.
+// WithCancelCause работает как WithCancel, но возвращает CancelCauseFunc вместо CancelFunc.
+// Вызов cancel с ненулевой ошибкой (причиной) записывает эту ошибку в ctx;
+// затем ее можно получить через Cause(ctx).
+// Вызов cancel с nil устанавливает причину как Canceled.
 //
-// Example use:
+// Пример использования:
 //
 //	ctx, cancel := context.WithCancelCause(parent)
 //	cancel(myError)
-//	ctx.Err() // returns context.Canceled
-//	context.Cause(ctx) // returns myError
+//	ctx.Err() // возвращает context.Canceled
+//	context.Cause(ctx) // возвращает myError
 func WithCancelCause(parent Context) (ctx Context, cancel CancelCauseFunc) {
+	// Создаем cancelCtx
 	c := withCancel(parent)
-	return c, func(cause error) { c.cancel(true, Canceled, cause) }
+	// Возвращаем контекст и функцию, которая принимает причину отмены
+	return c,
+		func(cause error) {
+			// true - удалять из родительского контекста
+			// Canceled - тип ошибки
+			// cause - конкретная причина отмены (может быть nil)
+			c.cancel(true, Canceled, cause)
+		}
 }
 
+// withCancel создает cancelCtx и связывает его с родительским контекстом
 func withCancel(parent Context) *cancelCtx {
 	if parent == nil {
 		panic("cannot create context from nil parent")
 	}
 	c := &cancelCtx{}
+
+	// Связываем с родительским контекстом:
+	// 1. Если родитель уже отменен - сразу отменяем новый контекст
+	// 2. Иначе добавляем новый контекст как дочерний к родителю
 	c.propagateCancel(parent, c)
 	return c
 }
 
-// Cause returns a non-nil error explaining why c was canceled.
-// The first cancellation of c or one of its parents sets the cause.
-// If that cancellation happened via a call to CancelCauseFunc(err),
-// then [Cause] returns err.
-// Otherwise Cause(c) returns the same value as c.Err().
-// Cause returns nil if c has not been canceled yet.
+// Cause возвращает ненулевую ошибку, объясняющую почему контекст c был отменен.
+// Первая отмена c или одного из его родителей устанавливает причину.
+// Если отмена произошла через вызов CancelCauseFunc(err), то Cause возвращает err.
+// Иначе Cause(c) возвращает то же значение, что и c.Err().
+// Cause возвращает nil если c еще не был отменен.
 func Cause(c Context) error {
+	// Пытаемся получить cancelCtx через ключ cancelCtxKey
+	// Это работает только для контекстов, созданных through WithCancel/WithCancelCause
 	if cc, ok := c.Value(&cancelCtxKey).(*cancelCtx); ok {
-		cc.mu.Lock()
-		cause := cc.cause
-		cc.mu.Unlock()
-		if cause != nil {
+		cc.mu.Lock()      // локаемся т.к. горутины могут обращаться
+		cause := cc.cause // Получаем причину отмены
+		cc.mu.Unlock()    // анлок
+
+		// Если причина установлена - возвращаем ее
+		if cause != nil { // если это CancelCauseFunc, то возвращаем Cause
 			return cause
 		}
-		// Either this context is not canceled,
-		// or it is canceled and the cancellation happened in a
-		// custom context implementation rather than a *cancelCtx.
+		// Либо контекст не отменен,
+		// либо отмена произошла в кастомной реализации контекста, а не в *cancelCtx
+
 	}
-	// There is no cancelCtxKey value with a cause, so we know that c is
-	// not a descendant of some canceled Context created by WithCancelCause.
-	// Therefore, there is no specific cause to return.
-	// If this is not one of the standard Context types,
-	// it might still have an error even though it won't have a cause.
+
+	// Нет cancelCtxKey со значением причины, значит c не является
+	// потомком отмененного Context созданного через WithCancelCause
+	// Возвращаем стандартную ошибку контекста (или nil, если не отменен)
 	return c.Err()
 }
 
-// AfterFunc arranges to call f in its own goroutine after ctx is canceled.
-// If ctx is already canceled, AfterFunc calls f immediately in its own goroutine.
+// AfterFunc планирует вызов функции f в отдельной горутине после отмены ctx.
+// Если ctx уже отменен, AfterFunc немедленно вызывает f в отдельной горутине.
 //
-// Multiple calls to AfterFunc on a context operate independently;
-// one does not replace another.
+// Множественные вызовы AfterFunc на одном контексте работают независимо;
+// один вызов не заменяет другой.
 //
-// Calling the returned stop function stops the association of ctx with f.
-// It returns true if the call stopped f from being run.
-// If stop returns false,
-// either the context is canceled and f has been started in its own goroutine;
-// or f was already stopped.
-// The stop function does not wait for f to complete before returning.
-// If the caller needs to know whether f is completed,
-// it must coordinate with f explicitly.
+// Вызов возвращаемой функции stop останавливает связь ctx с f.
+// Она возвращает true, если вызов остановил выполнение f.
+// Если stop возвращает false, то либо контекст уже отменен и f уже запущена,
+// либо f уже была остановлена ранее.
+// Функция stop не ждет завершения f перед возвратом.
+// Если вызывающему нужно знать, завершена ли f,
+// он должен координироваться с f явно.
 //
-// If ctx has a "AfterFunc(func()) func() bool" method,
-// AfterFunc will use it to schedule the call.
+// Если ctx имеет метод "AfterFunc(func()) func() bool",
+// AfterFunc будет использовать его для планирования вызова.
 func AfterFunc(ctx Context, f func()) (stop func() bool) {
+	// Создаем afterFuncCtx, который оборачивает функцию f
 	a := &afterFuncCtx{
 		f: f,
 	}
+
+	// Связываем этот afterFuncCtx с родительским контекстом
+	// Это добавляет a в children родительского контекста
 	a.cancelCtx.propagateCancel(ctx, a)
+
+	// Возвращаем функцию stop, которую можно вызвать,
+	// чтобы отменить выполнение f (если еще не поздно)
 	return func() bool {
 		stopped := false
+
+		// Используем sync.Once для гарантии,
+		// что функция выполнится только один раз
 		a.once.Do(func() {
 			stopped = true
 		})
 		if stopped {
+			// Отменяем afterFuncCtx, что удалит его из родительского списка children
 			a.cancel(true, Canceled, nil)
 		}
 		return stopped
 	}
 }
 
+// afterFuncer - интерфейс, который может быть реализован кастомными контекстами
+// для предоставления собственной оптимизированной реализации AfterFunc
 type afterFuncer interface {
 	AfterFunc(func()) func() bool
 }
 
+// afterFuncCtx - специальный контекст для выполнения функции после отмены
 type afterFuncCtx struct {
-	cancelCtx
-	once sync.Once // either starts running f or stops f from running
-	f    func()
+	cancelCtx           // Встраиваем cancelCtx для наследования всех его полей и методов
+	once      sync.Once // Гарантирует однократное выполнение функции f
+	f         func()    // Функция, которую нужно выполнить после отмены
 }
 
+// cancel - переопределенный метод отмены для afterFuncCtx
 func (a *afterFuncCtx) cancel(removeFromParent bool, err, cause error) {
+	// Сначала отменяем встроенный cancelCtx
+	// false - не удаляем из родителя здесь (сделаем это позже если нужно)
 	a.cancelCtx.cancel(false, err, cause)
+
+	// Если требуется, удаляем себя из списка детей родительского контекста
 	if removeFromParent {
 		removeChild(a.Context, a)
 	}
+	// Запускаем функцию f, но только один раз (благодаря sync.Once)
 	a.once.Do(func() {
-		go a.f()
+		go a.f() // Запускаем в отдельной горутине, чтобы не блокировать
 	})
 }
 
-// A stopCtx is used as the parent context of a cancelCtx when
-// an AfterFunc has been registered with the parent.
-// It holds the stop function used to unregister the AfterFunc.
+// stopCtx используется как родительский контекст для cancelCtx,
+// когда AfterFunc был зарегистрирован у родителя.
+// Он хранит stop-функцию, используемую для отмены регистрации AfterFunc.
 type stopCtx struct {
-	Context
-	stop func() bool
+	Context             // Встраиваем родительский контекст
+	stop    func() bool // Функция для остановки AfterFunc
 }
 
-// goroutines counts the number of goroutines ever created; for testing.
+// goroutines подсчитывает количество созданных горутин (для тестирования)
 var goroutines atomic.Int32
 
-// &cancelCtxKey is the key that a cancelCtx returns itself for.
+// &cancelCtxKey - ключ, по которому cancelCtx возвращает сам себя
 var cancelCtxKey int
 
-// parentCancelCtx returns the underlying *cancelCtx for parent.
-// It does this by looking up parent.Value(&cancelCtxKey) to find
-// the innermost enclosing *cancelCtx and then checking whether
-// parent.Done() matches that *cancelCtx. (If not, the *cancelCtx
-// has been wrapped in a custom implementation providing a
-// different done channel, in which case we should not bypass it.)
+// parentCancelCtx возвращает базовый *cancelCtx для родительского контекста
+// Она ищет parent.Value(&cancelCtxKey), чтобы найти самый внутренний *cancelCtx
+// и проверяет, совпадает ли parent.Done() с этим *cancelCtx.
+// (Если нет, значит *cancelCtx обернут в кастомную реализацию,
+// предоставляющую другой канал done, и мы не должны его обходить.)
 func parentCancelCtx(parent Context) (*cancelCtx, bool) {
+	// Получаем канал Done родительского контекста
 	done := parent.Done()
+	// Если канал уже закрыт или nil, это не cancelCtx
 	if done == closedchan || done == nil {
 		return nil, false
 	}
+	// Пытаемся получить cancelCtx через Value с ключом cancelCtxKey
 	p, ok := parent.Value(&cancelCtxKey).(*cancelCtx)
 	if !ok {
 		return nil, false
 	}
+	// Получаем канал Done из найденного cancelCtx
 	pdone, _ := p.done.Load().(chan struct{})
+	// Сравниваем каналы Done
 	if pdone != done {
+		// Каналы разные - значит cancelCtx обернут в другую реализацию
+		// Нельзя использовать внутренний cancelCtx напрямую
 		return nil, false
 	}
+	// Все проверки пройдены, возвращаем cancelCtx
 	return p, true
 }
 
-// removeChild removes a context from its parent.
+// removeChild удаляет контекст-ребенок из его родительского контекста
 func removeChild(parent Context, child canceler) {
+	// Проверяем, является ли родитель stopCtx
 	if s, ok := parent.(stopCtx); ok {
+		// Если да, вызываем stop-функцию для отмены AfterFunc
 		s.stop()
 		return
 	}
+	// Пытаемся получить родительский cancelCtx
 	p, ok := parentCancelCtx(parent)
 	if !ok {
+		// Не смогли найти cancelCtx - ничего не делаем
 		return
 	}
+
+	// Блокируем доступ к children родительского cancelCtx
 	p.mu.Lock()
+
+	// Если у родителя есть дети, удаляем child из списка
 	if p.children != nil {
 		delete(p.children, child)
 	}
 	p.mu.Unlock()
 }
 
-// A canceler is a context type that can be canceled directly. The
-// implementations are *cancelCtx and *timerCtx.
+// canceler - это интерфейс для типов контекстов, которые можно отменить напрямую.
+// Реализуют этот интерфейс *cancelCtx и *timerCtx.
 type canceler interface {
+	// cancel отменяет контекст
+	// removeFromParent: нужно ли удалять этот контекст из списка детей родителя
+	// err: тип ошибки (Canceled или DeadlineExceeded)
+	// cause: конкретная причина отмены (может быть nil)
 	cancel(removeFromParent bool, err, cause error)
+	// Done возвращает канал, который закрывается при отмене контекста
 	Done() <-chan struct{}
 }
 
-// closedchan is a reusable closed channel.
+// closedchan - переиспользуемый закрытый канал.
+// Создается один раз при инициализации пакета.
 var closedchan = make(chan struct{})
 
+// init - функция инициализации пакета, вызывается автоматически
 func init() {
-	close(closedchan)
+	close(closedchan) // Закрываем канал один раз при старте программы
 }
 
-// A cancelCtx can be canceled. When canceled, it also cancels any children
-// that implement canceler.
+// cancelCtx - контекст, который можно отменить.
+// При отмене он также отменяет все дочерние контексты,
+// реализующие интерфейс canceler.
 type cancelCtx struct {
+	// Встраиваем интерфейс Context (обычно это родительский контекст)
+	// Это позволяет cancelCtx реализовывать интерфейс Context и
+	// делегировать методы родителю, если они не переопределены в cancelCtx
 	Context
 
-	mu       sync.Mutex            // protects following fields
-	done     atomic.Value          // of chan struct{}, created lazily, closed by first cancel call
+	// mu - мьютекс для защиты следующих полей от одновременного доступа
+	// Контексты могут использоваться из нескольких горутин одновременно,
+	// поэтому нужна синхронизация
+	mu sync.Mutex // protects following fields
+
+	// done - атомарное значение, хранящее канал chan struct{}
+	// Канал создается лениво (при первом вызове Done())
+	// и закрывается при первом вызове cancel()
+	done atomic.Value // of chan struct{}, created lazily, closed by first cancel call
+
+	// children - множество дочерних контекстов, которые можно отменить
+	// Хранится как map[canceler]struct{} для быстрого удаления
+	// При первой отмене устанавливается в nil, чтобы освободить память
+	// и предотвратить дальнейшие изменения
 	children map[canceler]struct{} // set to nil by the first cancel call
-	err      atomic.Value          // set to non-nil by the first cancel call
-	cause    error                 // set to non-nil by the first cancel call
+
+	// err - атомарное значение, хранящее ошибку отмены
+	// Устанавливается в ненулевое значение при первой отмене
+	// Используется atomic.Value для потокобезопасного чтения без блокировки
+	err atomic.Value // set to non-nil by the first cancel call
+
+	// cause - конкретная причина отмены (для WithCancelCause)
+	// Хранится отдельно от err, чтобы можно было различать
+	// стандартную отмену и отмену с причиной
+	// Защищается мьютексом mu (не atomic.Value, так как error - интерфейс)
+	cause error // set to non-nil by the first cancel call
 }
 
 func (c *cancelCtx) Value(key any) any {
+	// Проверяем, не ищем ли мы сам cancelCtx по специальному ключу
 	if key == &cancelCtxKey {
-		return c
+		return c // Возвращаем сам cancelCtx
 	}
+
+	// Иначе делегируем поиск родительскому контексту
 	return value(c.Context, key)
 }
 

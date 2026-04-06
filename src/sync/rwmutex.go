@@ -37,14 +37,22 @@ import (
 //
 // [the Go memory model]: https://go.dev/ref/mem
 type RWMutex struct {
-	w           Mutex        // held if there are pending writers
-	writerSem   uint32       // semaphore for writers to wait for completing readers
-	readerSem   uint32       // semaphore for readers to wait for completing writers
-	readerCount atomic.Int32 // number of pending readers
-	readerWait  atomic.Int32 // number of departing readers
+	w           Mutex        // held if there are pending writers // гейский мьютекс
+	writerSem   uint32       // semaphore for writers to wait for completing readers // семафор для писателей
+	readerSem   uint32       // semaphore for readers to wait for completing writers // симафор для читателей
+	readerCount atomic.Int32 // number of pending readers // счетчик читателей (может быть отрицательным!)
+	readerWait  atomic.Int32 // number of departing readers // сколько читателей еще должны закончить
 }
 
-const rwmutexMaxReaders = 1 << 30
+/*
+   > 0 - сколько активных читателей
+
+   = 0 - нет ни читателей, ни писателей
+
+   < 0 - есть писатель (заблокирован для записи)
+*/
+
+const rwmutexMaxReaders = 1 << 30 // пог
 
 // Happens-before relationships are indicated to the race detector via:
 // - Unlock  -> Lock:  readerSem
@@ -64,6 +72,14 @@ const rwmutexMaxReaders = 1 << 30
 // It should not be used for recursive read locking; a blocked Lock
 // call excludes new readers from acquiring the lock. See the
 // documentation on the [RWMutex] type.
+
+/*
+Увеличиваем счетчик читателей
+
+# Если счетчик стал отрицательным → писатель ждет → читатель блокируется
+
+Иначе → читатель работает
+*/
 func (rw *RWMutex) RLock() {
 	if race.Enabled {
 		race.Read(unsafe.Pointer(&rw.w))
@@ -71,6 +87,7 @@ func (rw *RWMutex) RLock() {
 	}
 	if rw.readerCount.Add(1) < 0 {
 		// A writer is pending, wait for it.
+		// Писатель уже ждет, ждем его
 		runtime_SemacquireRWMutexR(&rw.readerSem, false, 0)
 	}
 	if race.Enabled {
@@ -149,6 +166,8 @@ func (rw *RWMutex) Lock() {
 	// First, resolve competition with other writers.
 	rw.w.Lock()
 	// Announce to readers there is a pending writer.
+
+	// Это переводит счетчик в отрицательную зону, и новые читатели видят, что писатель ждет.
 	r := rw.readerCount.Add(-rwmutexMaxReaders) + rwmutexMaxReaders
 	// Wait for active readers.
 	if r != 0 && rw.readerWait.Add(r) != 0 {

@@ -319,6 +319,7 @@ func (c *mcache) releaseAll() {
 // prepareForSweep flushes c if the system has entered a new sweep phase
 // since c was populated. This must happen between the sweep phase
 // starting and the first allocation from c.
+// подготовка кеша потока для новой фазы GC
 func (c *mcache) prepareForSweep() {
 	// Alternatively, instead of making sure we do this on every P
 	// between starting the world and allocating on that P, we
@@ -327,15 +328,17 @@ func (c *mcache) prepareForSweep() {
 	// ensure all cached spans are swept, and then disable
 	// allocate-black. However, with this approach it's difficult
 	// to avoid spilling mark bits into the *next* GC cycle.
-	sg := mheap_.sweepgen
-	flushGen := c.flushGen.Load()
+	sg := mheap_.sweepgen         // Текущее поколение sweep
+	flushGen := c.flushGen.Load() // Последнее поколение очистки
 	if flushGen == sg {
-		return
+		return // все окей, кеш уже актуален
 	} else if flushGen != sg-2 {
+		// мы ожидали, что последнее поколение очистки отстает на 2
+		// почему на 2 ? sweepgen увеличивается на 2 за цикл GC
 		println("bad flushGen", flushGen, "in prepareForSweep; sweepgen", sg)
 		throw("bad flushGen")
 	}
-	c.releaseAll()
-	stackcache_clear(c)
+	c.releaseAll()                    // Освобождает все span'ы в кэше
+	stackcache_clear(c)               // Очищает кэш стеков
 	c.flushGen.Store(mheap_.sweepgen) // Synchronizes with gcStart
 }

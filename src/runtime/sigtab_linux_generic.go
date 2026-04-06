@@ -6,6 +6,7 @@
 
 package runtime
 
+// таблица сигналов. Почему постфикс Generic ????
 var sigtable = [...]sigTabT{
 	/* 0 */ {0, "SIGNONE: no trap"},
 	/* 1 */ {_SigNotify + _SigKill, "SIGHUP: terminal line hangup"},

@@ -281,12 +281,13 @@ func slicerunetostring(buf *tmpBuf, a []rune) string {
 	return s[:size2]
 }
 
+// наше дефолтное представление строки
 type stringStruct struct {
 	str unsafe.Pointer
 	len int
 }
 
-// Variant with *byte pointer type for DWARF debugging.
+// Variant with *byte pointer type for DWARF debugging. только под DWARF
 type stringStructDWARF struct {
 	str *byte
 	len int

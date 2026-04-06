@@ -124,7 +124,7 @@ var (
 
 // This slice records the initializing tasks that need to be
 // done to start up the runtime. It is built by the linker.
-var runtime_inittasks []*initTask
+var runtime_inittasks []*initTask // линкер дает задания
 
 // main_init_done is a signal used by cgocallbackg that initialization
 // has been completed. It is made before _cgo_notify_runtime_init_done,
@@ -145,30 +145,62 @@ var runtimeInitTime int64
 var initSigmask sigset
 
 // The main goroutine.
+// p.s. Так как я дебил, то пишу с ошибками и для себя.
+// Если не написал и не объяснил своими словами - ты не знаешь.
+// let's gooo  Prayer In C (Robin Schulz remix) 1. Europa Plus Lilly Wood &amp; The Prick and Robin Schulz
 func main() {
-	mp := getg().m
+	/*
+		Так как го забустраплен (ключивое слово страп или трап ?)
+		у нас точно всегда при запуске программы есть машина (М) и на ней главная (G0) (см. структуру g) с системным стеком.
+		Соотвествно, мы вызываем инстринск функцию, которая делает ассемблерную вставку и
+		мы берем нашу горутину и по смещению в структуре находим нашу машину (то есть это поле m         *m      // current m; offset known to arm liblink)
+	*/
+	mp := getg().m // интринсик
 
 	// Racectx of m0->g0 is used only as the parent of the main goroutine.
 	// It must not be used for anything else.
+	/*
+		Мы отключаем даннын параметр для g0 т.к. она будет выполнять системные вызовы как сборка мусора, обработку сигналов и т.д.
+		Соотвественно, наша горутина не участвует в racecondition
+		(https://ru.wikipedia.org/wiki/%D0%A1%D0%BE%D1%81%D1%82%D0%BE%D1%8F%D0%BD%D0%B8%D0%B5_%D0%B3%D0%BE%D0%BD%D0%BA%D0%B8),
+		Крч он код этот синхронизирован
+	*/
 	mp.g0.racectx = 0
 
 	// Max stack size is 1 GB on 64-bit, 250 MB on 32-bit.
 	// Using decimal instead of binary GB and MB because
 	// they look nicer in the stack overflow failure message.
-	if goarch.PtrSize == 8 {
-		maxstacksize = 1000000000
-	} else {
-		maxstacksize = 250000000
+	if goarch.PtrSize == 8 { // ptrSice == 8 => 8 байт = 64 бита = машинное слово в 64-битной архитектуре.
+		// (https://ru.wikipedia.org/wiki/%D0%9C%D0%B0%D1%88%D0%B8%D0%BD%D0%BD%D0%BE%D0%B5_%D1%81%D0%BB%D0%BE%D0%B2%D0%BE)
+		// Имеено столько занимает места любой адресс в 64-битной системе
+		maxstacksize = 1000000000 // 1 gb => 1000 MByte => 1000 * 1000 KByte => 1000 * 1000 * 1000 Byte = 10^9
+	} else { // 32 битная система с со словом 32-бита
+		maxstacksize = 250000000 //делим на 1000 => еше делим на 1к => 250000 KByte => 250 MByte
 	}
 
 	// An upper limit for max stack size. Used to avoid random crashes
 	// after calling SetMaxStack and trying to allocate a stack that is too big,
 	// since stackalloc works with 32-bit sizes.
+	/*
+		2 GB для 64-битной системы и 0.5 GB для 32-битной системы
+		связанно с тем, что может быть вызванно переполнение 32-битного регистра, поэтому берем половину от макс значения
+	*/
 	maxstackceiling = 2 * maxstacksize
 
 	// Allow newproc to start new Ms.
-	mainStarted = true
+	mainStarted = true // ну тут все понятно, понятно же ?
 
+	/*
+		Cисмон не работает в WASM (https://ru.wikipedia.org/wiki/WebAssembly) так как у него нет системных тредов пупупупу.
+		Соотвественно в WASM у нас вытесняющая многозадачность (https://ru.wikipedia.org/wiki/%D0%92%D1%8B%D1%82%D0%B5%D1%81%D0%BD%D1%8F%D1%8E%D1%89%D0%B0%D1%8F_%D0%BC%D0%BD%D0%BE%D0%B3%D0%BE%D0%B7%D0%B0%D0%B4%D0%B0%D1%87%D0%BD%D0%BE%D1%81%D1%82%D1%8C)
+		У го всегда активно как минимум две(m)
+		одна для нашей программы, другая, которая создается в блоке ниже - для системного монитора, который будет заниматься домохозяйством и зоставлять другие горутины собирать хлопок
+		то есть запуск GC
+		вытеснение (g), если она работает дольше 10 мс
+		возврат (p) ((см. структуру p puintptr))
+		долбежка в netpoller (реализация в го, которая использует epoll если ядро-linux, остальным соболезную) epoll(https://ru.wikipedia.org/wiki/Epoll)
+		чиста стека завершившихся g, но не g0 (мы системный не трогаем)
+	*/
 	if haveSysmon {
 		systemstack(func() {
 			newm(sysmon, nil, -1)
@@ -181,8 +213,10 @@ func main() {
 	// Those can arrange for main.main to run in the main thread
 	// by calling runtime.LockOSThread during initialization
 	// to preserve the lock.
+	// Локаем на время инициализации
 	lockOSThread()
 
+	// проверка, что у нас mp это основной M
 	if mp != &m0 {
 		throw("runtime.main not on m0")
 	}
@@ -209,11 +243,14 @@ func main() {
 		}
 	}()
 
+	// включаем наш GC
+	// До этого момента GC был выключен
 	gcenable()
+	// Разрешаем обновление GOMAXPROCS без остановки мира (STW)
 	defaultGOMAXPROCSUpdateEnable() // don't STW before runtime initialized.
 
 	main_init_done = make(chan bool)
-	if iscgo {
+	if iscgo { // Если используется cgo (вызовы C кода из Go)
 		if _cgo_pthread_key_created == nil {
 			throw("_cgo_pthread_key_created missing")
 		}
@@ -252,22 +289,31 @@ func main() {
 	// by package plugin). Run through the modules in dependency
 	// order (the order they are initialized by the dynamic
 	// loader, i.e. they are added to the moduledata linked list).
+
+	/*
+		Init такси могут прийти разными путсями в завис от типа output-type=dylib|static|exec
+		Крч вызываем все init()
+	*/
 	for m := &firstmoduledata; m != nil; m = m.next {
-		doInit(m.inittasks)
+		doInit(m.inittasks) // тоже ничего интересного, просто проходимся и выполняем
 	}
 
 	// Disable init tracing after main init done to avoid overhead
 	// of collecting statistics in malloc and newproc
 	inittrace.active = false
 
+	// говорим о том, что мы закончили
 	close(main_init_done)
 
+	// анлочимся так как все было проинициализированно
+	// Если пользователь не вызвал runtime.LockOSThread в init(),
 	needUnlock = false
 	unlockOSThread()
 
-	if isarchive || islibrary {
-		// A program compiled with -buildmode=c-archive or c-shared
-		// has a main, but it is not executed.
+	// смотрим, что мы собираем
+	if isarchive || islibrary { // p.s. set by linker
+		// Программа собрана как C-архив или C-библиотека
+		// У нее есть main, но он не выполняется
 		if GOARCH == "wasm" {
 			// On Wasm, pause makes it return to the host.
 			// Unlike cgo callbacks where Ms are created on demand,
@@ -281,14 +327,18 @@ func main() {
 		}
 		return
 	}
-	fn := main_main // make an indirect call, as the linker doesn't know the address of the main package when laying down the runtime
-	fn()
 
+	// тут я вызываю пользовательский код. косвенный вызов т.к. линкер не знает адрес main пакета
+	// при компиляции рантайма.
+	fn := main_main // make an indirect call, as the linker doesn't know the address of the main package when laying down the runtime
+	fn()            // тут выведется наш любимый 'Hello, world!'
+
+	// после завершения чистим кодикс
 	exitHooksRun := false
 	if raceenabled {
 		runExitHooks(0) // run hooks now, since racefini does not return
 		exitHooksRun = true
-		racefini()
+		racefini() // завершение race detector
 	}
 
 	// Check for C memory leaks if using ASAN and we've made cgo calls,
@@ -298,6 +348,7 @@ func main() {
 	// No point in leak checking if no cgo calls, since leak checking
 	// just looks for objects allocated using malloc and friends.
 	// Just checking iscgo doesn't help because asan implies iscgo.
+	// Проверка утечек памяти для ASAN  если С был вызван
 	if asanenabled && (isarchive || islibrary || NumCgoCall() > 1) {
 		runExitHooks(0) // lsandoleakcheck may not return
 		exitHooksRun = true
@@ -308,23 +359,30 @@ func main() {
 	// another goroutine at the same time as main returns,
 	// let the other goroutine finish printing the panic trace.
 	// Once it does, it will exit. See issues 3934 and 20018.
+	// Ожидание завершения паникующих горутин
+	// Если есть другие горутины в состоянии паники, даем им время
+	// завершить вывод трассировки стека
 	if runningPanicDefers.Load() != 0 {
 		// Running deferred functions should not take long.
 		for c := 0; c < 1000; c++ {
 			if runningPanicDefers.Load() == 0 {
 				break
 			}
-			Gosched()
+			Gosched() // отдаем управление другим горутинам
 		}
 	}
+	// Если есть паника, паркуем главную горутину
 	if panicking.Load() != 0 {
 		gopark(nil, nil, waitReasonPanicWait, traceBlockForever, 1)
 	}
+	// Запускаем exit hooks если еще не запустили
 	if !exitHooksRun {
 		runExitHooks(0)
 	}
-
+	// Завершаем программу с кодом 0 (успех)
 	exit(0)
+
+	// segmentation fault на всякий случай
 	for {
 		var x *int32
 		*x = 0
@@ -403,6 +461,10 @@ func goschedguarded() {
 //
 //go:nosplit
 func goschedIfBusy() {
+	/*
+		Если у нас есть процессы, которые простаивают - уступить им работу.
+		Иначе дальше работаем
+	*/
 	gp := getg()
 	// Call gosched if gp.preempt is set; we may be in a tight loop that
 	// doesn't otherwise yield.
@@ -440,28 +502,41 @@ func goschedIfBusy() {
 // See go.dev/issue/67401.
 //
 //go:linkname gopark
-func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason waitReason, traceReason traceBlockReason, traceskip int) {
+func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason waitReason, traceReason traceBlockReason, traceskip int) { // реализация парковки горутин
+	// Если это не сон, то проверяем таймауты, потому что они могут истечь,
+	// пока две горутины занимают планировщик
 	if reason != waitReasonSleep {
 		checkTimeouts() // timeouts may expire while two goroutines keep the scheduler busy
+		//
 	}
-	mp := acquirem()
-	gp := mp.curg
-	status := readgstatus(gp)
+	mp := acquirem()          // берем текущий М
+	gp := mp.curg             // Получаем текущую горутину G из M
+	status := readgstatus(gp) // Читаем текущий статус горутины
+
+	// Проверяем, что горутина в правильном состоянии для парковки
 	if status != _Grunning && status != _Gscanrunning {
 		throw("gopark: bad g status")
 	}
+
+	// Сохраняем параметры парковки в структуре M для последующего использования:
 	mp.waitlock = lock
-	mp.waitunlockf = unlockf
+	mp.waitunlockf = unlockf // сохраняем функцию разблокировки. p.s. анлок смотрит lockRang
 	gp.waitreason = reason
 	mp.waitTraceBlockReason = traceReason
 	mp.waitTraceSkip = traceskip
-	releasem(mp)
+	releasem(mp) // уменьшает счетчик блокировок M, но не освобождает сам M
 	// can't do anything that might move the G between Ms here.
+
+	// Вызов mcall для перехода на системный стек и вызова park_m
+	// mcall - это низкоуровневый механизм рантайма для переключения контекста
+	// park_m фактически переведет горутину в состояние ожидания
 	mcall(park_m)
 }
 
 // Puts the current goroutine into a waiting state and unlocks the lock.
 // The goroutine can be made runnable again by calling goready(gp).
+// ставит текущую горутину в состояние ожидания и анлочит локранг
+// эта горутина может быть снова исполняемой путм вызова функции goready(gp)
 func goparkunlock(lock *mutex, reason waitReason, traceReason traceBlockReason, traceskip int) {
 	gopark(parkunlock_c, unsafe.Pointer(lock), reason, traceReason, traceskip)
 }
@@ -829,6 +904,7 @@ func getGodebugEarly() (string, bool) {
 //	call runtime·mstart
 //
 // The new G calls runtime·main.
+// Инициализация планировщика нашего
 func schedinit() {
 	lockInit(&sched.lock, lockRankSched)
 	lockInit(&sched.sysmonlock, lockRankSysmon)
@@ -1436,6 +1512,7 @@ type stwReason uint8
 // Reasons to stop-the-world.
 //
 // Avoid reusing reasons and add new ones instead.
+// причины остановки мира
 const (
 	stwUnknown                     stwReason = iota // "unknown"
 	stwGCMarkTerm                                   // "GC mark termination"
@@ -1518,11 +1595,11 @@ var stopTheWorldContext worldStop
 //
 // Returns the STW context. When starting the world, this context must be
 // passed to startTheWorld.
-func stopTheWorld(reason stwReason) worldStop {
-	semacquire(&worldsema)
-	gp := getg()
-	gp.m.preemptoff = reason.String()
-	systemstack(func() {
+func stopTheWorld(reason stwReason) worldStop { // легендарный stopTheWorld
+	semacquire(&worldsema)            // Захватываем глобальный семафор для сериализации вызовов stopTheWorld
+	gp := getg()                      // Получаем текущую горутину
+	gp.m.preemptoff = reason.String() // Устанавливаем причину остановки и запрещаем вытеснение текущей горутины
+	systemstack(func() {              // Переключаемся на системный стек и выполняем фактическую остановку
 		stopTheWorldContext = stopTheWorldWithSema(reason) // avoid write to stack
 	})
 	return stopTheWorldContext
@@ -1558,14 +1635,15 @@ func startTheWorld(w worldStop) {
 // stopTheWorldGC has the same effect as stopTheWorld, but blocks
 // until the GC is not running. It also blocks a GC from starting
 // until startTheWorldGC is called.
+// остановка мира с щазитой от конфликтов с GC
 func stopTheWorldGC(reason stwReason) worldStop {
-	semacquire(&gcsema)
-	return stopTheWorld(reason)
+	semacquire(&gcsema)         // захватываем (мы же русские) семафор GC
+	return stopTheWorld(reason) // останавливаем мир
 }
 
 // startTheWorldGC undoes the effects of stopTheWorldGC.
 //
-// w must be the worldStop returned by stopTheWorld.
+// w must be the worldStop returned by stopTheWorld. ..
 func startTheWorldGC(w worldStop) {
 	startTheWorld(w)
 	semrelease(&gcsema)
@@ -1855,7 +1933,7 @@ func mStackIsSystemAllocated() bool {
 
 // mstart is the entry-point for new Ms.
 // It is written in assembly, uses ABI0, is marked TOPFRAME, and calls mstart0.
-func mstart()
+func mstart() // интринсик
 
 // mstart0 is the Go entry-point for new Ms.
 // This must not split the stack because we may not even have stack
@@ -1867,10 +1945,11 @@ func mstart()
 //go:nosplit
 //go:nowritebarrierrec
 func mstart0() {
-	gp := getg()
+	gp := getg() // интринсик, получаем нашу текущую горутину
 
+	// проверка, системный ли стек. т.к. у системного стека  stack.lo = 0
 	osStack := gp.stack.lo == 0
-	if osStack {
+	if osStack { // инициализация системного стека
 		// Initialize stack bounds from system stack.
 		// Cgo may have left stack size in stack.hi.
 		// minit may update the stack bounds.
@@ -1879,22 +1958,25 @@ func mstart0() {
 		// We set hi to &size, but there are things above
 		// it. The 1024 is supposed to compensate this,
 		// but is somewhat arbitrary.
-		size := gp.stack.hi
+		size := gp.stack.hi // пытаемся получить размер стека из stack.hi
 		if size == 0 {
+			// 16 KB * мултиплаер (смотри const.go)
 			size = 16384 * sys.StackGuardMultiplier
 		}
 		gp.stack.hi = uintptr(noescape(unsafe.Pointer(&size)))
-		gp.stack.lo = gp.stack.hi - size + 1024
+		gp.stack.lo = gp.stack.hi - size + 1024 // так как границы не точные, выше могут быть другие данные, поэтому + 1024
 	}
 	// Initialize stack guard so that we can start calling regular
 	// Go code.
-	gp.stackguard0 = gp.stack.lo + stackGuard
+	gp.stackguard0 = gp.stack.lo + stackGuard // нижняя граница + константа для определения переполнения стека и расширения.
 	// This is the g0, so we can also call go:systemstack
 	// functions, which check stackguard1.
-	gp.stackguard1 = gp.stackguard0
+	gp.stackguard1 = gp.stackguard0 // это для системных вызовов
+
+	// старт планировщика
 	mstart1()
 
-	// Exit this thread.
+	// Exit this thread. // выходим из треда
 	if mStackIsSystemAllocated() {
 		// Windows, Solaris, illumos, Darwin, AIX and Plan 9 always system-allocate
 		// the stack, but put it in gp.stack before mstart,
@@ -1906,11 +1988,13 @@ func mstart0() {
 
 // The go:noinline is to guarantee the sys.GetCallerPC/sys.GetCallerSP below are safe,
 // so that we can set up g0.sched to return to the call of mstart1 above.
+// если функцию заинлайнить, что она может вернуть не так значения, которые мы ожидаем.
 //
 //go:noinline
 func mstart1() {
-	gp := getg()
+	gp := getg() // интринсик, получаем нашу текущую горутину
 
+	// проверяем, такущая горутина ялвяется ли главной для потока
 	if gp != gp.m.g0 {
 		throw("bad runtime·mstart")
 	}
@@ -1921,31 +2005,43 @@ func mstart1() {
 	// so other calls can reuse the current frame.
 	// And goexit0 does a gogo that needs to return from mstart1
 	// and let mstart0 exit the thread.
-	gp.sched.g = guintptr(unsafe.Pointer(gp))
-	gp.sched.pc = sys.GetCallerPC()
-	gp.sched.sp = sys.GetCallerSP()
 
-	asminit()
-	minit()
+	// Настраиваем поле sched структуры g0.
+	// sched (gobuf) используется для сохранения контекста выполнения,
+	// чтобы позже можно было вернуться в эту точку.
+	// Здесь мы настраиваем его так, чтобы "возврат" из горутин (через goexit0)
+	// приводил к переходу в точку сразу после вызова mstart1 в mstart0.
+	// Настройка возарата т.к. мы никогда не должын будем вернуться из шедулера
+	// p.s. А код в mstart0 просто завершает поток
+	gp.sched.g = guintptr(unsafe.Pointer(gp)) // сохраняем указатель на себя (g0)
+	gp.sched.pc = sys.GetCallerPC()           // адрес возврата в mstart0 (после call mstart1)
+	gp.sched.sp = sys.GetCallerSP()           // указатель стека mstart0
+
+	asminit() // интринсик, на linux_amd64 будет просто заглушкой
+	minit()   // настройка альтернативного стека для gsignal (горутина)
 
 	// Install signal handlers; after minit so that minit can
 	// prepare the thread to be able to handle the signals.
-	if gp.m == &m0 {
+	if gp.m == &m0 { // настройка сигнала
 		mstartm0()
 	}
 
+	// debug skip
 	if debug.dataindependenttiming == 1 {
 		sys.EnableDIT()
 	}
 
+	// вызов пользовательской функции, если она есть.
+	// эта функция выолнится до запуска планировщика. Пример как sysmon
 	if fn := gp.m.mstartfn; fn != nil {
 		fn()
 	}
-
-	if gp.m != &m0 {
-		acquirep(gp.m.nextp.ptr())
+	// привязка к (М) процесора P
+	if gp.m != &m0 { // для m0 P достаётся на этапе инициализации рантайма. Остальным же M будет выдан заранее заготовленный P
+		acquirep(gp.m.nextp.ptr()) // присовение p и синхронищация mcache
 		gp.m.nextp = 0
 	}
+	// ура, вызов планировщика
 	schedule()
 }
 
@@ -2857,9 +2953,16 @@ var newmHandoff struct {
 // May run with m.p==nil, so write barriers are not allowed.
 //
 // id is optional pre-allocated m ID. Omit by passing -1.
+// // это значит, что мы будем игнорировать барьер записи (https://en.wikipedia.org/wiki/Write_barrier)
 //
 //go:nowritebarrierrec
 func newm(fn func(), pp *p, id int64) {
+	/*
+		создаем новый (m), который будет добавлен в пул всех машин (allm), пока у нас не будет
+		свободного системного треда. Почему у нас фукнциональный тип ?
+		Потому что у нас либо будет работа планировщка или го функция.
+
+	*/
 	// allocm adds a new M to allm, but they do not start until created by
 	// the OS in newm1 or the template thread.
 	//
@@ -2870,8 +2973,15 @@ func newm(fn func(), pp *p, id int64) {
 	// newm is not preempted between allocm and starting the new thread,
 	// ensuring that anything added to allm is guaranteed to eventually
 	// start.
+	/*
+		Тут мы выключаем пыпытку вытеснения нашей горутины,
+		чтобы нас не снялии не положили в пулл горутин во время попытки создания новой (m)
+	*/
 	acquirem()
 
+	/*
+		Тут мы создаем (m) и добавим его в allm (это связный список, см. Runtime2.go allm)
+	*/
 	mp := allocm(pp, fn, id)
 	mp.nextp.set(pp)
 	mp.sigmask = initSigmask
@@ -2904,33 +3014,41 @@ func newm(fn func(), pp *p, id int64) {
 		releasem(getg().m)
 		return
 	}
+	// создаем системный тред через cgo или
 	newm1(mp)
 	releasem(getg().m)
 }
 
+/*
+Тут мы запускаем новый поток нашей операционной системы
+*/
 func newm1(mp *m) {
-	if iscgo {
+	if iscgo { // проверка СИ Го флага.
 		var ts cgothreadstart
-		if _cgo_thread_start == nil {
+		if _cgo_thread_start == nil { // если у нас установлен cgo в true && рантайм функция не засетаплена, нам смэрть
 			throw("_cgo_thread_start missing")
 		}
+		// инициализация
 		ts.g.set(mp.g0)
 		ts.tls = (*uint64)(unsafe.Pointer(&mp.tls[0]))
 		ts.fn = unsafe.Pointer(abi.FuncPCABI0(mstart))
-		if msanenabled {
+		if msanenabled { // санитайзер
 			msanwrite(unsafe.Pointer(&ts), unsafe.Sizeof(ts))
 		}
-		if asanenabled {
+		if asanenabled { // санитайзер
 			asanwrite(unsafe.Pointer(&ts), unsafe.Sizeof(ts))
 		}
-		execLock.rlock() // Prevent process clone.
-		asmcgocall(_cgo_thread_start, unsafe.Pointer(&ts))
-		execLock.runlock()
+		// конец инициализации
+		// Не клонируем текующий процесс
+		execLock.rlock()                                   // Prevent process clone.
+		asmcgocall(_cgo_thread_start, unsafe.Pointer(&ts)) // создаем новый системный тред через вызов интринсиков
+		execLock.runlock()                                 // анлочии и возвращаемся
 		return
 	}
-	execLock.rlock() // Prevent process clone.
-	newosproc(mp)
-	execLock.runlock()
+	// Не клонируем текующий процесс
+	execLock.rlock()   // Prevent process clone.
+	newosproc(mp)      // создаем новый системный тред
+	execLock.runlock() // анлочии и возвращаемся
 }
 
 // startTemplateThread starts the template thread if it is not already
@@ -3037,7 +3155,7 @@ func mspinning() {
 // Must not have write barriers because this may be called without a P.
 //
 //go:nowritebarrierrec
-func startm(pp *p, spinning, lockheld bool) {
+func startm(pp *p, spinning, lockheld bool) { // создаем новый М ?
 	// Disable preemption.
 	//
 	// Every owned P must have an owner that will eventually stop it in the
@@ -3074,7 +3192,8 @@ func startm(pp *p, spinning, lockheld bool) {
 			return
 		}
 	}
-	nmp := mget()
+	// 1. Берём свободный M из пула
+	nmp := mget() // получаем М из мдл листа
 	if nmp == nil {
 		// No M is available, we must drop sched.lock and call newm.
 		// However, we already own a P to assign to the M.
@@ -3098,7 +3217,8 @@ func startm(pp *p, spinning, lockheld bool) {
 			// The caller incremented nmspinning, so set m.spinning in the new M.
 			fn = mspinning
 		}
-		newm(fn, pp, id)
+		// Если нет свободного M, создаём новый
+		newm(fn, pp, id) // создаем новый М
 
 		if lockheld {
 			lock(&sched.lock)
@@ -3428,7 +3548,7 @@ top:
 	// Check the global runnable queue once in a while to ensure fairness.
 	// Otherwise two goroutines can completely occupy the local runqueue
 	// by constantly respawning each other.
-	if pp.schedtick%61 == 0 && !sched.runq.empty() {
+	if pp.schedtick%61 == 0 && !sched.runq.empty() { // тут я проверяю глобальную очередь
 		lock(&sched.lock)
 		gp := globrunqget()
 		unlock(&sched.lock)
@@ -4030,7 +4150,7 @@ func resetspinning() {
 // local run queue.
 // This may temporarily acquire sched.lock.
 // Can run concurrently with GC.
-func injectglist(glist *gList) {
+func injectglist(glist *gList) { // тут я создаю нвоый m если надо
 	if glist.empty() {
 		return
 	}
@@ -4121,13 +4241,16 @@ func injectglist(glist *gList) {
 // One round of scheduler: find a runnable goroutine and execute it.
 // Never returns.
 func schedule() {
-	mp := getg().m
+	mp := getg().m // Получаем текущий поток (M)
 
+	// проверка, что нет у нас блокировки
 	if mp.locks != 0 {
 		throw("schedule: holding locks")
 	}
 
+	// проверка, что у нашей горутины нет заблокированный горутины, которая должна испольняться ТОЛЬКО на этом потоке.
 	if mp.lockedg != 0 {
+		// Останавливаем текущий поток и переключаемся на заблокированную горутину
 		stoplockedm()
 		execute(mp.lockedg.ptr(), false) // Never returns.
 	}
@@ -4226,57 +4349,86 @@ func parkunlock_c(gp *g, lock unsafe.Pointer) bool {
 }
 
 // park continuation on g0.
-func park_m(gp *g) {
-	mp := getg().m
+func park_m(gp *g) { // фактическая парковка горутины в коде
+	mp := getg().m // интринсик, получаем текущий М
 
+	// если включена трассировка
 	trace := traceAcquire()
 
 	// If g is in a synctest group, we don't want to let the group
 	// become idle until after the waitunlockf (if any) has confirmed
 	// that the park is happening.
 	// We need to record gp.bubble here, since waitunlockf can change it.
+	// Синхротестирование (для отладки и тестов)
+	// Если горутина в группе synctest, не даем группе стать idle
+	// пока waitunlockf не подтвердит парковку
+	// Сохраняем bubble, так как waitunlockf может изменить его
 	bubble := gp.bubble
 	if bubble != nil {
-		bubble.incActive()
+		bubble.incActive() // Увеличиваем счетчик активных
 	}
 
+	// Трассировка события перед сменой статуса
+	// Важно сделать это сейчас, так как после смены статуса
+	// стек может быть перемещен сборщиком мусора
 	if trace.ok() {
 		// Trace the event before the transition. It may take a
 		// stack trace, but we won't own the stack after the
 		// transition anymore.
 		trace.GoPark(mp.waitTraceBlockReason, mp.waitTraceSkip)
 	}
+
 	// N.B. Not using casGToWaiting here because the waitreason is
 	// set by park_m's caller.
+	// Меняем статус горутины с _Grunning на _Gwaiting
 	casgstatus(gp, _Grunning, _Gwaiting)
 	if trace.ok() {
 		traceRelease(trace)
 	}
 
+	// Отвязываем горутину от текущего M
+	// Теперь M не выполняет эту горутину
 	dropg()
 
+	// если у нас есть функция для анлока
 	if fn := mp.waitunlockf; fn != nil {
-		ok := fn(gp, mp.waitlock)
+		// Вызываем unlockf, которая возвращает bool:
+		// - false: продолжить выполнение (отменить парковку)
+		// - true: оставить в парковке
+		ok := fn(gp, mp.waitlock) // возвращаем статус исполнения
+
+		// Очищаем поля в M
 		mp.waitunlockf = nil
 		mp.waitlock = nil
+
+		// Если unlockf вернула false, отменяем парковку
 		if !ok {
 			trace := traceAcquire()
+			// Возвращаем статус в _Grunnable
 			casgstatus(gp, _Gwaiting, _Grunnable)
+
+			// Корректируем счетчик в synctest
 			if bubble != nil {
 				bubble.decActive()
 			}
+
+			// Логируем событие распарковки
 			if trace.ok() {
 				trace.GoUnpark(gp, 2)
 				traceRelease(trace)
 			}
+
+			// Немедленно выполняем горутину снова
 			execute(gp, true) // Schedule it back, never returns.
 		}
 	}
 
+	// Если была synctest группа и мы не отменили парковку
 	if bubble != nil {
 		bubble.decActive()
 	}
 
+	// Запускаем планировщик для поиска другой горутины
 	schedule()
 }
 
@@ -4571,7 +4723,7 @@ func save(pc, sp, bp uintptr) {
 // entry point for syscalls, which obtains the SP and PC from the caller.
 //
 //go:nosplit
-func reentersyscall(pc, sp, bp uintptr) {
+func reentersyscall(pc, sp, bp uintptr) { // счетчик для понятия, отвязываемся или нет?
 	trace := traceAcquire()
 	gp := getg()
 
@@ -4660,7 +4812,7 @@ func reentersyscall(pc, sp, bp uintptr) {
 //
 //go:nosplit
 //go:linkname entersyscall
-func entersyscall() {
+func entersyscall() { // так, сними ли мы тут сами горутину ?
 	// N.B. getcallerfp cannot be written directly as argument in the call
 	// to reentersyscall because it forces spilling the other arguments to
 	// the stack. This results in exceeding the nosplit stack requirements
@@ -5156,8 +5308,8 @@ func malg(stacksize int32) *g {
 // Put it on the queue of g's waiting to run.
 // The compiler turns a go statement into a call to this.
 func newproc(fn *funcval) {
-	gp := getg()
-	pc := sys.GetCallerPC()
+	gp := getg()            // интринсик, берем нашу горутину
+	pc := sys.GetCallerPC() //
 	systemstack(func() {
 		newg := newproc1(fn, gp, pc, false, waitReasonZero)
 
@@ -6014,14 +6166,16 @@ func procresize(nprocs int32) *p {
 //go:yeswritebarrierrec
 func acquirep(pp *p) {
 	// Do the part that isn't allowed to have write barriers.
-	wirep(pp)
+	wirep(pp) // связываем P с M
 
-	// Have p; write barriers now allowed.
+	// Have p; write barriers now allowed. // разрешаем барьер записи
 
 	// Perform deferred mcache flush before this P can allocate
 	// from a potentially stale mcache.
-	pp.mcache.prepareForSweep()
+	// Подготовка mcache перед использованием
+	pp.mcache.prepareForSweep() //  Очистка устаревшего кэша
 
+	// если включена трассировка, так что похуй
 	trace := traceAcquire()
 	if trace.ok() {
 		trace.ProcStart()
@@ -6033,18 +6187,21 @@ func acquirep(pp *p) {
 // current M to pp. This is broken out so we can disallow write
 // barriers for this part, since we don't yet have a P.
 //
+// запрещает write barriers, потому что write barrier требует наличия P, а мы как раз его устанавливаем (курица и яйцо).
+//
 //go:nowritebarrierrec
 //go:nosplit
 func wirep(pp *p) {
-	gp := getg()
+	gp := getg() // берем текущую горутину
 
-	if gp.m.p != 0 {
+	if gp.m.p != 0 { // если у нас уже есть P. Один поток (M) не может быть связан с двумя P одновременно
 		// Call on the systemstack to avoid a nosplit overflow build failure
 		// on some platforms when built with -N -l. See #64113.
 		systemstack(func() {
 			throw("wirep: already in go")
 		})
 	}
+	// если M уже привязан к P и состояние текущего P is 'free'
 	if pp.m != 0 || pp.status != _Pidle {
 		// Call on the systemstack to avoid a nosplit overflow build failure
 		// on some platforms when built with -N -l. See #64113.
@@ -6057,9 +6214,10 @@ func wirep(pp *p) {
 			throw("wirep: invalid p state")
 		})
 	}
-	gp.m.p.set(pp)
-	pp.m.set(gp.m)
-	pp.status = _Prunning
+	// если все норм, то
+	gp.m.p.set(pp)        // M указывает на свой P
+	pp.m.set(gp.m)        // P указывает на свой M
+	pp.status = _Prunning // P переходит в состояние 'испольнения'
 }
 
 // Disassociate p and the current m.
@@ -6223,13 +6381,46 @@ var needSysmonWorkaround bool = false
 const haveSysmon = GOARCH != "wasm"
 
 // Always runs without a P, so write barriers are not allowed.
+/*
+	Программа Go с GOMAXPROCS=4:
+
+	Потоки выполнения:
+	┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
+	│   M1 (с P1)     │  │   M2 (с P2)     │  │   M3 (с P3)     │  │   M4 (с P4)     │
+	│  g0 → schedule()│  │  g0 → schedule()│  │  g0 → schedule()│  │  g0 → schedule()│
+	│  curg → user G  │  │  curg → user G  │  │  curg → user G  │  │  curg → user G  │
+	└─────────────────┘  └─────────────────┘  └─────────────────┘  └─────────────────┘
+
+			│                     │                     │                     │
+			│                     │                     │                     │
+			└─────────────────────┼─────────────────────┼─────────────────────┘
+								  │                     │
+								  ▼                     ▼
+	┌─────────────────────────────────────────────────────────────────────────────┐
+	│                       Sysmon (отдельный поток M0)                           │
+	│                           g0 → sysmon()                                     │
+	│                           curg = nil (нет пользовательской горутины)        │
+	│                           P = nil (работает без процессора)                 │
+	└─────────────────────────────────────────────────────────────────────────────┘
+*/
 //
 //go:nowritebarrierrec
 func sysmon() {
+	/*
+		Сисмон у нас работает на отдельном треде.
+		Сисмон работает на g0
+		Он работает без P, where *P == nil
+		Он работает без curg, where *curg = nil
+	*/
+	/*
+		глобальная блокировка, которая вызывет lock2
+			Если свободен, то быстро захватит мьютекст
+			Иначе будет spin/sleep
+	*/
 	lock(&sched.lock)
-	sched.nmsys++
-	checkdead()
-	unlock(&sched.lock)
+	sched.nmsys++       // +1 к системным потомкам (М), которые не учитыватся при проверке дедлоков
+	checkdead()         // проверка дедлока
+	unlock(&sched.lock) // unlock2
 
 	lastgomaxprocs := int64(0)
 	lasttrace := int64(0)
@@ -6237,12 +6428,13 @@ func sysmon() {
 	delay := uint32(0)
 
 	for {
+		// адаптивно спим, начиная с 20 микросек
 		if idle == 0 { // start with 20us sleep...
 			delay = 20
-		} else if idle > 50 { // start doubling the sleep after 1ms...
+		} else if idle > 50 { // start doubling the sleep after 1ms... удваиваем задержку после 1 мс
 			delay *= 2
 		}
-		if delay > 10*1000 { // up to 10ms
+		if delay > 10*1000 { // up to 10ms не больше 10 мс сон
 			delay = 10 * 1000
 		}
 		usleep(delay)
@@ -6263,8 +6455,13 @@ func sysmon() {
 		// from a timer to avoid adding system load to applications that spend
 		// most of their time sleeping.
 		now := nanotime()
+		/*
+			если у нас нет отладки  и
+				если у на GC не стартавал или процессы (P) в простое -> мы спим
+		*/
 		if debug.schedtrace <= 0 && (sched.gcwaiting.Load() || sched.npidle.Load() == gomaxprocs) {
 			lock(&sched.lock)
+			// опять делаеи ту же проверку без трейса и, если  true - спим по умному, чтобы проснуться по таймеру или событию
 			if sched.gcwaiting.Load() || sched.npidle.Load() == gomaxprocs {
 				syscallWake := false
 				next := timeSleepUntil()
@@ -6297,17 +6494,26 @@ func sysmon() {
 			unlock(&sched.lock)
 		}
 
+		// сисмонлок у нас вызывается для долгих операций как netpoll, retake, GC
 		lock(&sched.sysmonlock)
 		// Update now in case we blocked on sysmonnote or spent a long time
 		// blocked on schedlock or sysmonlock above.
 		now = nanotime()
 
 		// trigger libc interceptors if needed
+		/*
+			для сисших библиотек, где пропуск событий необходим ((GUI вроде GTK))
+		*/
 		if *cgo_yield != nil {
 			asmcgocall(*cgo_yield, nil)
 		}
 		// poll network if not polled for more than 10ms
+		// Netpoll - ВАЖНО ВАЖНО ВАЖНО
 		lastpoll := sched.lastpoll.Load()
+		/*
+			Если у нас netpoll проинит. и  при этом мы не полим уже  и послдений полл был больше 10 мс.
+			Видимо 10мс было выбрано чисто опытным путем
+		*/
 		if netpollinited() && lastpoll != 0 && lastpoll+10*1000*1000 < now {
 			sched.lastpoll.CompareAndSwap(lastpoll, now)
 			list, delta := netpoll(0) // non-blocking - returns list of goroutines
@@ -6350,7 +6556,7 @@ func sysmon() {
 			sysmonUpdateGOMAXPROCS()
 			lastgomaxprocs = now
 		}
-		if scavenger.sysmonWake.Load() != 0 {
+		if scavenger.sysmonWake.Load() != 0 { // очяистка памяти ??
 			// Kick the scavenger awake if someone requested it.
 			scavenger.wake()
 		}
@@ -6389,6 +6595,7 @@ type sysmontick struct {
 // preempted.
 const forcePreemptNS = 10 * 1000 * 1000 // 10ms
 
+// ретейк проверяет если P работает дольше 10 ms
 func retake(now int64) uint32 {
 	n := 0
 	// Prevent allp slice changes. This lock will be completely
@@ -6689,6 +6896,8 @@ var (
 //
 // This is based on forcegchelper.
 func defaultGOMAXPROCSUpdateEnable() {
+
+	// Если debug.updatemaxprocs == 0, функция отключена
 	if debug.updatemaxprocs == 0 {
 		// Unconditionally increment the metric when updates are disabled.
 		//
@@ -6701,33 +6910,41 @@ func defaultGOMAXPROCSUpdateEnable() {
 		// feature, but some users need to be able to completely
 		// disable the update system calls (such as sandboxes).
 		// Currently, updatemaxprocs=0 serves that purpose.
+
+		// Просто инкрементируем метрику и выходим
 		updatemaxprocs.IncNonDefault()
 		return
 	}
-
+	// опа, отдельная го рутина
+	// спит большую часть времени
 	go updateMaxProcsGoroutine()
 }
 
 func updateMaxProcsGoroutine() {
-	updateMaxProcsG.g = getg()
-	lockInit(&updateMaxProcsG.lock, lockRankUpdateMaxProcsG)
+	updateMaxProcsG.g = getg()                               // берем нашу горутину
+	lockInit(&updateMaxProcsG.lock, lockRankUpdateMaxProcsG) // Инициализируем мьютекс с указанием ранка для предотвращения deadlock
 	for {
-		lock(&updateMaxProcsG.lock)
-		if updateMaxProcsG.idle.Load() {
+		lock(&updateMaxProcsG.lock)      // Блокируем мьютекс перед проверкой состояния.
+		if updateMaxProcsG.idle.Load() { // если наша горутина уже в состояние ожидания - вываливаемся
 			throw("updateMaxProcsGoroutine: phase error")
 		}
-		updateMaxProcsG.idle.Store(true)
+		updateMaxProcsG.idle.Store(true) // иначе выставляем ожидание idle в true
+
+		// Паркуем горутину, разблокируя мьютекс. Горутина будет явно разбужена сисмоном
 		goparkunlock(&updateMaxProcsG.lock, waitReasonUpdateGOMAXPROCSIdle, traceBlockSystemGoroutine, 1)
 		// This goroutine is explicitly resumed by sysmon.
 
+		// Останавливаем мир для безопасного обновления GOMAXPROCS
 		stw := stopTheWorldGC(stwGOMAXPROCS)
 
 		// Still OK to update?
-		lock(&sched.lock)
-		custom := sched.customGOMAXPROCS
-		unlock(&sched.lock)
+		lock(&sched.lock)                // локаем шедулер
+		custom := sched.customGOMAXPROCS // берем наличие кастомного присета пользователя
+		unlock(&sched.lock)              // инлок шедулера
+		// Если пользователь установил кастомное значение, отменяем автоматическое обновление.
 		if custom {
-			startTheWorldGC(stw)
+			startTheWorldGC(stw) // Запускаем мир обратно и завершаем горутину.
+			// После этого адаптация GOMAXPROCS будет отключена навсегда.
 			return
 		}
 
@@ -6736,11 +6953,19 @@ func updateMaxProcsGoroutine() {
 		// TODO(prattmic): this could use a nicer API. Perhaps add it to the
 		// stw parameter?
 		newprocs = updateMaxProcsG.procs
+
+		// Сбрасываем флаг кастомного значения, так как мы собираемся применить
+		// автоматическое значение. Если пользователь позже снова вызовет
+		// runtime.GOMAXPROCS(), флаг снова установится в true.
 		lock(&sched.lock)
 		sched.customGOMAXPROCS = false
 		unlock(&sched.lock)
 
+		// / Запускаем мир с новым значением GOMAXPROCS
 		startTheWorldGC(stw)
+
+		// опять крутимся, паркуеся и по новой
+		// шишшшшш
 	}
 }
 
@@ -6839,7 +7064,7 @@ func mput(mp *m) {
 func mget() *m {
 	assertLockHeld(&sched.lock)
 
-	mp := sched.midle.ptr()
+	mp := sched.midle.ptr() // midle мидл лист)
 	if mp != nil {
 		sched.midle = mp.schedlink
 		sched.nmidle--
@@ -7638,6 +7863,7 @@ func doInit(ts []*initTask) {
 	}
 }
 
+// просто проходимся по таскам и выполяем их. Ничего интересного
 func doInit1(t *initTask) {
 	switch t.state {
 	case 2: // fully initialized
@@ -7667,7 +7893,7 @@ func doInit1(t *initTask) {
 		for i := uint32(0); i < t.nfns; i++ {
 			p := add(firstFunc, uintptr(i)*goarch.PtrSize)
 			f := *(*func())(unsafe.Pointer(&p))
-			f()
+			f() // вызов наших инит тасков
 		}
 
 		if inittrace.active {

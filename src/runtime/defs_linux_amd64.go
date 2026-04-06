@@ -230,6 +230,7 @@ type fpreg1 struct {
 	exponent    uint16
 }
 
+// альтернативный стек ?
 type stackt struct {
 	ss_sp     *byte
 	ss_flags  int32

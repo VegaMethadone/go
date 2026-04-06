@@ -18,22 +18,29 @@ var (
 	netpollWakeSig atomic.Uint32      // used to avoid duplicate calls of netpollBreak
 )
 
+// инициализация нетполлера
 func netpollinit() {
 	var errno uintptr
+	// создаем экземпляр epoll (файловый дескриптер самого епола)
 	epfd, errno = syscall.EpollCreate1(syscall.EPOLL_CLOEXEC)
 	if errno != 0 {
 		println("runtime: epollcreate failed with", errno)
 		throw("runtime: netpollinit failed")
 	}
+	// создаем файловый дескриптор для уведомлений о событиях
+	// почему неблокирующий ? используется для пробуждения epoll из других горутин
 	efd, errno := syscall.Eventfd(0, syscall.EFD_CLOEXEC|syscall.EFD_NONBLOCK)
 	if errno != 0 {
 		println("runtime: eventfd failed with", -errno)
 		throw("runtime: eventfd failed")
 	}
+	// настройка события, на которые будет реагировать epoll
 	ev := syscall.EpollEvent{
-		Events: syscall.EPOLLIN,
+		Events: syscall.EPOLLIN, // отслеживаем события на чтение
 	}
+	// записываем указатель netpollEventFd в нашем поле из [8]byte
 	*(**uintptr)(unsafe.Pointer(&ev.Data)) = &netpollEventFd
+	// регистарция eventfd дескриптор в мониторинг epoll и epoll будет слушать этот файловый дескриптер
 	errno = syscall.EpollCtl(epfd, syscall.EPOLL_CTL_ADD, efd, &ev)
 	if errno != 0 {
 		println("runtime: epollctl failed with", errno)
@@ -96,28 +103,44 @@ func netpollBreak() {
 // delay < 0: blocks indefinitely
 // delay == 0: does not block, just polls
 // delay > 0: block for up to that many nanoseconds
+
+/*
+Проверка  готовность сетевых соединений.
+В качестве параметра передаем ns, где
+
+	delay < 0: блокируемся на неопределенное время
+	delay = 0: просто полим дальше
+	delay > 0: блокируемся на это кол ns
+*/
 func netpoll(delay int64) (gList, int32) {
+	// инициализируем глобальную переменную в  netpollinit()
 	if epfd == -1 {
 		return gList{}, 0
 	}
 	var waitms int32
 	if delay < 0 {
-		waitms = -1
+		waitms = -1 // блокировать бесконечно ?
 	} else if delay == 0 {
-		waitms = 0
+		waitms = 0 // полим
 	} else if delay < 1e6 {
-		waitms = 1
+		waitms = 1 // ждать 1 мс
 	} else if delay < 1e15 {
-		waitms = int32(delay / 1e6)
+		waitms = int32(delay / 1e6) // переводим наносекунды в миллисекунды
 	} else {
 		// An arbitrary cap on how long to wait for a timer.
-		// 1e9 ms == ~11.5 days.
-		waitms = 1e9
+		// 1e9 ms == ~11.5 days. втф
+		waitms = 1e9 // максимум ~11.5 дней ?? нахуя
 	}
 	var events [128]syscall.EpollEvent
 retry:
+	/*
+		epfd - файловый дескриптер epoll
+		events - массив на 128 событиый. эмпирически ??
+		waitms - время ожидания в миллисекундах
+	*/
 	n, errno := syscall.EpollWait(epfd, events[:], int32(len(events)), waitms)
 	if errno != 0 {
+		// ждем только событие на чтение
 		if errno != _EINTR {
 			println("runtime: epollwait on fd", epfd, "failed with", errno)
 			throw("runtime: netpoll failed")
@@ -127,27 +150,32 @@ retry:
 		if waitms > 0 {
 			return gList{}, 0
 		}
+		// Если waitms == 0 (неблокирующий) или waitms == -1 (блокирующий бесконечно), повторяем вызов
 		goto retry
 	}
 	var toRun gList
 	delta := int32(0)
 	for i := int32(0); i < n; i++ {
 		ev := events[i]
-		if ev.Events == 0 {
+		if ev.Events == 0 { // если событиый не было - идем дальше
 			continue
 		}
 
+		// если указатель в &ev.Data лежит на netpollEventFd - то это наш фд.
 		if *(**uintptr)(unsafe.Pointer(&ev.Data)) == &netpollEventFd {
+			// проверочка, что у нас событие только на чтение, иначе ошибка ядра или баг
 			if ev.Events != syscall.EPOLLIN {
 				println("runtime: netpoll: eventfd ready for", ev.Events)
 				throw("runtime: netpoll: eventfd ready for something unexpected")
 			}
+			//
 			if delay != 0 {
 				// netpollBreak could be picked up by a
 				// nonblocking poll. Only read the 8-byte
 				// integer if blocking.
 				// Since EFD_SEMAPHORE was not specified,
 				// the eventfd counter will be reset to 0.
+				// завтра посмотрю на свежую голову
 				var one uint64
 				read(int32(netpollEventFd), noescape(unsafe.Pointer(&one)), int32(unsafe.Sizeof(one)))
 				netpollWakeSig.Store(0)

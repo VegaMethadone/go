@@ -97,6 +97,7 @@ func typecheckslice(l []ir.Node, top int) {
 	}
 }
 
+// buildin типы
 var _typekind = []string{
 	types.TINT:        "int",
 	types.TUINT:       "uint",
@@ -437,7 +438,7 @@ func typecheck1(n ir.Node, top int) ir.Node {
 		n := n.(*ir.UnaryExpr)
 		return tcNew(n)
 
-	case ir.OPRINT, ir.OPRINTLN:
+	case ir.OPRINT, ir.OPRINTLN: // вызов встроенной функции print() | println()
 		n := n.(*ir.CallExpr)
 		return tcPrint(n)
 

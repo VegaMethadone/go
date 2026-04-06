@@ -428,24 +428,25 @@ func (p *parser) fileOrNil() *File {
 		}
 		prev = p.tok
 
+		// у нас может быть на топ лвле
 		switch p.tok {
-		case _Import:
+		case _Import: // импорт
 			p.next()
 			f.DeclList = p.appendGroup(f.DeclList, p.importDecl)
 
-		case _Const:
+		case _Const: // константа
 			p.next()
 			f.DeclList = p.appendGroup(f.DeclList, p.constDecl)
 
-		case _Type:
+		case _Type: // тип
 			p.next()
 			f.DeclList = p.appendGroup(f.DeclList, p.typeDecl)
 
-		case _Var:
+		case _Var: // вар
 			p.next()
 			f.DeclList = p.appendGroup(f.DeclList, p.varDecl)
 
-		case _Func:
+		case _Func: // фанк
 			p.next()
 			if d := p.funcDeclOrNil(); d != nil {
 				f.DeclList = append(f.DeclList, d)

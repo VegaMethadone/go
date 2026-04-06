@@ -61,6 +61,8 @@ const (
 //
 // mheap must not be heap-allocated because it contains mSpanLists,
 // which must not be heap-allocated.
+// Главная куча говна нашей программы
+// Ограничения иерархии с кешированием для снижения конкуренции (за альтушек)
 type mheap struct {
 	_ sys.NotInHeap
 
@@ -259,7 +261,7 @@ type mheap struct {
 	unused *specialfinalizer // never set, just here to force the specialfinalizer type into DWARF
 }
 
-var mheap_ mheap
+var mheap_ mheap // куча нашего рантайма. Для всех объектов ?
 
 // A heapArena stores metadata for a heap arena. heapArenas are stored
 // outside of the Go heap and accessed via the mheap_.arenas index.

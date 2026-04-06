@@ -1324,16 +1324,21 @@ func minitSignals() {
 // signal stack to the gsignal stack if cgo is not used (regardless
 // of whether it is already set). Record which choice was made in
 // newSigstack, so that it can be undone in unminit.
-func minitSignalStack() {
+func minitSignalStack() { // стек для сигналов от OS т.к. стек нашей горутины может быть полным, чтобы избежать оверфлов
 	mp := getg().m
-	var st stackt
-	sigaltstack(nil, &st)
+	var st stackt // Структура для работы с альтернативным стеком
+
+	// Если альтернативный стек отключен ИЛИ мы не используем cgo
+	sigaltstack(nil, &st) // преверка текущего состояния альтернативного стека
 	if st.ss_flags&_SS_DISABLE != 0 || !iscgo {
+		// Используем стек gsignal как альтернативный стек
 		signalstack(&mp.gsignal.stack)
-		mp.newSigstack = true
+		mp.newSigstack = true // Запомним, что мы его установили
 	} else {
-		setGsignalStack(&st, &mp.goSigStack)
+		// если есть алтернативынй стек или нет cgo
+		setGsignalStack(&st, &mp.goSigStack) // используем его для gsignal
 		mp.newSigstack = false
+		// в си мог быть создан свой поток, тогда используем его
 	}
 }
 
@@ -1345,13 +1350,18 @@ func minitSignalStack() {
 // removes all essential signals from the mask, thus causing those
 // signals to not be blocked. Then it sets the thread's signal mask.
 // After this is called the thread can receive signals.
-func minitSignalMask() {
-	nmask := getg().m.sigmask
+func minitSignalMask() { // так, при создание потока все сигналы заблокированы. Нужно разблочить их
+	nmask := getg().m.sigmask // маска сигналов текущего треда
 	for i := range sigtable {
+		// Удаляем из маски "неблокируемые" сигналы
+		// SIGBUS, SIGFPE, SIGILL, SIGSEGV — аварийные сигналы (нужны для паники)
+		// SIGPROF — для профилирования
+		// SIGURG — для асинхронной прерывающей сборки мусора (начиная с Go 1.14)
 		if !blockableSig(uint32(i)) {
-			sigdelset(&nmask, i)
+			sigdelset(&nmask, i) // Разблокируем сигнал
 		}
 	}
+	// Устанавливаем новую маску для потока
 	sigprocmask(_SIG_SETMASK, &nmask, nil)
 }
 

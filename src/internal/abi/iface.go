@@ -22,8 +22,8 @@ type ITab struct {
 // These are represented differently than non-empty interface, as the first
 // word always points to an abi.Type.
 type EmptyInterface struct {
-	Type *Type
-	Data unsafe.Pointer
+	Type *Type          // указатель на тип ???
+	Data unsafe.Pointer // указатель на самое value, которое будет в пустом интерфейсе
 }
 
 // NonEmptyInterface describes the layout of an interface that contains any methods.

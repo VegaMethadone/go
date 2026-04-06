@@ -206,11 +206,11 @@ func gcinit() {
 // just before we're about to start letting user code run.
 // It kicks off the background sweeper goroutine, the background
 // scavenger goroutine, and enables GC.
-func gcenable() {
+func gcenable() { // инициализация GC
 	// Kick off sweeping and scavenging.
 	c := make(chan int, 2)
-	go bgsweep(c)
-	go bgscavenge(c)
+	go bgsweep(c)    // инициализация очистителя
+	go bgscavenge(c) //  запускаем
 	<-c
 	<-c
 	memstats.enablegc = true // now that runtime is initialized, GC is okay

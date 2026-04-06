@@ -465,6 +465,7 @@ func (check *Checker) Files(files []*syntax.File) (err error) {
 // a side effect, not by returning early, to ensure that well-formed
 // syntax is properly type annotated even in a package containing
 // errors.
+// проверяем файлы
 func (check *Checker) checkFiles(files []*syntax.File) {
 	// Ensure that EnableAlias is consistent among concurrent type checking
 	// operations. See the documentation of [_aliasAny] for details.

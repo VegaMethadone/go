@@ -80,6 +80,7 @@ func walkExpr(n ir.Node, init *ir.Nodes) ir.Node {
 	return n
 }
 
+// вызываем эту функцию на IR ноду, для того, чтобы понять, как она будет раскрываться ?
 func walkExpr1(n ir.Node, init *ir.Nodes) ir.Node {
 	switch n.Op() {
 	default:

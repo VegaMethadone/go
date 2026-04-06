@@ -12,14 +12,16 @@
 // internal linking. This is the entry point for the program from the
 // kernel for an ordinary -buildmode=exe program. The stack holds the
 // number of arguments and the C-style argv.
-TEXT _rt0_amd64(SB),NOSPLIT,$-8
-	MOVQ	0(SP), DI	// argc
-	LEAQ	8(SP), SI	// argv
-	JMP	runtime·rt0_go(SB)
+// для обычных программ
+TEXT _rt0_amd64(SB),NOSPLIT,$-8 // точка входа от ядра OS
+	MOVQ	0(SP), DI	// argc - кол аргументв
+	LEAQ	8(SP), SI	// argv - сами аргументы
+	JMP	runtime·rt0_go(SB) // читаем значения в регистры DI и SI (согласно ABI x86_64)
 
 // main is common startup code for most amd64 systems when using
 // external linking. The C startup code will call the symbol "main"
 // passing argc and argv in the usual C ABI registers DI and SI.
+// для внешней линковки
 TEXT main(SB),NOSPLIT,$-8
 	JMP	runtime·rt0_go(SB)
 
@@ -155,24 +157,25 @@ GLOBL bad_cpu_msg<>(SB), RODATA, $84
 #endif
 
 #endif
-
+// прыгаем сюда для инициализации рантайма маму его ебал
 TEXT runtime·rt0_go(SB),NOSPLIT|NOFRAME|TOPFRAME,$0
 	// copy arguments forward on an even stack
-	MOVQ	DI, AX		// argc
-	MOVQ	SI, BX		// argv
-	SUBQ	$(5*8), SP		// 3args 2auto
-	ANDQ	$~15, SP
-	MOVQ	AX, 24(SP)
-	MOVQ	BX, 32(SP)
+	MOVQ	DI, AX		// argc  копируем из DI в AX
+	MOVQ	SI, BX		// argv копируем из SI в BX
+	SUBQ	$(5*8), SP		// 3args 2auto (выделяем место на стеке)
+	ANDQ	$~15, SP	// выравнивание стека по 16 байт (смотри ABI)
+	MOVQ	AX, 24(SP) // сохраняем AX в SP со смещением на 24
+	MOVQ	BX, 32(SP) // сохраняем AX в SP со смещением на 32
 
 	// create istack out of the given (operating system) stack.
 	// _cgo_init may update stackguard.
-	MOVQ	$runtime·g0(SB), DI
-	LEAQ	(-64*1024)(SP), BX
-	MOVQ	BX, g_stackguard0(DI)
+	// инициализация главной горутины
+	MOVQ	$runtime·g0(SB), DI // runtime.g0 у нас глобальная переменная. копируем её адресс как я понял в DI
+	LEAQ	(-64*1024)(SP), BX // выделение стека под горутину. делаем смещение от SP на 64 KB
+	MOVQ	BX, g_stackguard0(DI) // p.s. `_` значит доступ к полю -> то есть g_stackguard0 значит. что мы обращаемся к структуре g к филду  stackguard0
 	MOVQ	BX, g_stackguard1(DI)
-	MOVQ	BX, (g_stack+stack_lo)(DI)
-	MOVQ	SP, (g_stack+stack_hi)(DI)
+	MOVQ	BX, (g_stack+stack_lo)(DI) // нижняя граница
+	MOVQ	SP, (g_stack+stack_hi)(DI) // верхняя
 
 	// find out information about the processor we're on
 	MOVL	$0, AX
@@ -255,33 +258,39 @@ needtls:
 	CALL	runtime·wintls(SB)
 #endif
 
+	// Устанавливаем адрес поля m_tls структуры m0 в DI
 	LEAQ	runtime·m0+m_tls(SB), DI
+	// вызываем функцию для настройки Thread-Local Storage
 	CALL	runtime·settls(SB)
 
 	// store through it, to make sure it works
-	get_tls(BX)
-	MOVQ	$0x123, g(BX)
-	MOVQ	runtime·m0+m_tls(SB), AX
-	CMPQ	AX, $0x123
-	JEQ 2(PC)
+	get_tls(BX) // marcos в хедер файле для amd64, 386 && arm go_tls.h
+	MOVQ	$0x123, g(BX) // проверка TLS с фейк записью
+	MOVQ	runtime·m0+m_tls(SB), AX // читаем это значение
+	CMPQ	AX, $0x123 // сравниваем
+	JEQ 2(PC) // если ок - спикаем две инструкции
 	CALL	runtime·abort(SB)
 ok:
+	// Установка g0 как текущей горутины и связывание g0/m0
 	// set the per-goroutine and per-mach "registers"
-	get_tls(BX)
-	LEAQ	runtime·g0(SB), CX
-	MOVQ	CX, g(BX)
-	LEAQ	runtime·m0(SB), AX
+	get_tls(BX) // marcos в хедер файле для amd64, 386 && arm go_tls.h
+	LEAQ	runtime·g0(SB), CX // берем из рантайма адрес g0 и калдем в CX  
+	MOVQ	CX, g(BX)  // Устанавливаем g0 как текущую горутину + записываем адрес g0 в TLS
+	LEAQ	runtime·m0(SB), AX // Загружаем адрес главного потока m0 в AX
 
+	// Устанавливаем взаимные ссылки между m0 и g0:
 	// save m->g0 = g0
-	MOVQ	CX, m_g0(AX)
+	MOVQ	CX, m_g0(AX) // m0.g0 = g0 (записываем адрес g0 в поле g0 структуры m0)
 	// save m0 to g0->m
-	MOVQ	AX, g_m(CX)
+	MOVQ	AX, g_m(CX) /// g0.m = m0 (записываем адрес m0 в поле m структуры g0)
 
-	CLD				// convention is D is always left cleared
+	// Это соглашение в x86: инструкции работы со строками будут увеличивать указатели
+	CLD				// convention is D is always left cleared // 
 
 	// Check GOAMD64 requirements
 	// We need to do this after setting up TLS, so that
 	// we can report an error if there is a failure. See issue 49586.
+// проверка поддержки микро архитектуры
 #ifdef NEED_FEATURES_CX
 	MOVL	$0, AX
 	CPUID
@@ -338,27 +347,42 @@ ok:
 	JNE	bad_cpu
 #endif
 
-	CALL	runtime·check(SB)
+// Инициализация рантайма
+	CALL	runtime·check(SB) // Проверка размера структуры, константы и т.д.
 
-	MOVL	24(SP), AX		// copy argc
+	// Загружаем argc из стека (смещение 24)
+	MOVL	24(SP), AX		// copy argc 
+	// Кладем как первый аргумент на стек
 	MOVL	AX, 0(SP)
+	// Загружаем argv из стека (смещение 32)
 	MOVQ	32(SP), AX		// copy argv
+	// Кладем как второй аргумент на стек
 	MOVQ	AX, 8(SP)
+	
+	// Обработка аргументов командной строки
 	CALL	runtime·args(SB)
+	// Инициализация OS-специфичных компонентов
+	// (получение количества CPU, размера страницы памяти и т.д.)
 	CALL	runtime·osinit(SB)
-	CALL	runtime·schedinit(SB)
+	// Инициализация планировщика
+	// Создает пулы процессоров (P), инициализирует GC, netpoller и т.д.
+	CALL	runtime·schedinit(SB) // смотри файл proc.go
 
 	// create a new goroutine to start program
+	// Загружаем адрес функции runtime.main (точка входа пользовательской программы)
 	MOVQ	$runtime·mainPC(SB), AX		// entry
-	PUSHQ	AX
-	CALL	runtime·newproc(SB)
-	POPQ	AX
+	PUSHQ	AX // Сохраняем на стеке (аргумент для newproc)
+	CALL	runtime·newproc(SB) // Создаем новую горутину для выполнения runtime.main
+	POPQ	AX // Восстанавливаем стек
 
+	// ============================================================
 	// start this M
-	CALL	runtime·mstart(SB)
+	CALL	runtime·mstart(SB)  // старт программы, никогда не возвращаемся из неее (смотри чуть ниэе функцию)
 
+	// никогда не должны сюда попасть. Just in case
 	CALL	runtime·abort(SB)	// mstart should never return
 	RET
+	// ============================================================
 
 bad_cpu: // show that the program requires a certain microarchitecture level.
 	MOVQ	$2, 0(SP)
@@ -380,17 +404,17 @@ bad_cpu: // show that the program requires a certain microarchitecture level.
 // mainPC is a function value for runtime.main, to be passed to newproc.
 // The reference to runtime.main is made via ABIInternal, since the
 // actual function (not the ABI0 wrapper) is needed by newproc.
-DATA	runtime·mainPC+0(SB)/8,$runtime·main<ABIInternal>(SB)
-GLOBL	runtime·mainPC(SB),RODATA,$8
+DATA	runtime·mainPC+0(SB)/8,$runtime·main<ABIInternal>(SB) // глобальная переменная, которая хранит адрес 8 байт функции runtime.main 
+GLOBL	runtime·mainPC(SB),RODATA,$8 // Объявялем символ глобальным, которые виден из других файлов
 
 TEXT runtime·breakpoint(SB),NOSPLIT,$0-0
 	BYTE	$0xcc
 	RET
-
+// заглушка ??????
 TEXT runtime·asminit(SB),NOSPLIT,$0-0
 	// No per-thread init.
 	RET
-
+// вызываем другой mstart0.... Никогда не должен вернуться
 TEXT runtime·mstart(SB),NOSPLIT|TOPFRAME|NOFRAME,$0
 	CALL	runtime·mstart0(SB)
 	RET // not reached
@@ -477,7 +501,20 @@ TEXT runtime·systemstack_switch(SB), NOSPLIT, $0-0
 	// so the frame is saved.
 	CALL	runtime·abort(SB)
 	RET
+/*
 
+	В го у нас 3 стека:
+		1. Локальный у g
+		2. Системный стек у g0
+		3. Определенный стек для обработки сигналов
+
+	Значит что мы делаем - берем нашу текущую горутину с треда и смотрим
+		1. Если это системный стек g0 или gsignal -> то просто вызываем фукнцию
+		2. Иначе я переключусь на стек g0 и вызову функцию на системном стеке
+	
+	p.s. если ничто не попало под условия - мы вызываем стек для обработки паники  runtime·badsystemstack(RB)
+
+*/
 // func systemstack(fn func())
 TEXT runtime·systemstack(SB), NOSPLIT, $0-8
 	MOVQ	fn+0(FP), DI	// DI = fn

@@ -26,24 +26,36 @@ import (
 )
 
 const (
-	maxAlign  = 8
+	maxAlign = 8 // Максимальное выравнивание для 64-битных систем
+
+	// Вычисление размера структуры hchan с выравниванием
 	hchanSize = unsafe.Sizeof(hchan{}) + uintptr(-int(unsafe.Sizeof(hchan{}))&(maxAlign-1))
 	debugChan = false
 )
 
+// структура нашего канала в го
 type hchan struct {
-	qcount   uint           // total data in the queue
-	dataqsiz uint           // size of the circular queue
-	buf      unsafe.Pointer // points to an array of dataqsiz elements
-	elemsize uint16
-	closed   uint32
-	timer    *timer // timer feeding this chan
-	elemtype *_type // element type
-	sendx    uint   // send index
-	recvx    uint   // receive index
-	recvq    waitq  // list of recv waiters
-	sendq    waitq  // list of send waiters
-	bubble   *synctestBubble
+	qcount   uint           // Текущее количество элементов в буфере
+	dataqsiz uint           // размер закольцованной очереди
+	buf      unsafe.Pointer // указатель на первый элемень ?
+	elemsize uint16         // размер элемента в байтах
+
+	// Флаг закрытия: 0 = открыт, 1 = закрыт
+	// Используется atomic операции для проверки
+	closed uint32
+
+	timer    *timer // Таймер для операций с timeout (например, select с time.After)
+	elemtype *_type // тип элемента (альяс на аби представление типа)
+	sendx    uint   // индекс позиции, какие данные отправляем
+	recvx    uint   // индекс позиции, куда данные получим
+
+	// Очередь ожидающих получателей (горутин, которые ждут <-ch)
+	recvq waitq // list of recv waiters
+
+	// Очередь ожидающих отправителей (горутин, которые ждут ch <- value)
+	sendq waitq // list of send waiters
+
+	bubble *synctestBubble
 
 	// lock protects all fields in hchan, as well as several
 	// fields in sudogs blocked on this channel.
@@ -51,12 +63,15 @@ type hchan struct {
 	// Do not change another G's status while holding this lock
 	// (in particular, do not ready a G), as this can deadlock
 	// with stack shrinking.
-	lock mutex
+
+	// Мьютекс для защиты всех полей структуры
+	// Также защищает поля в sudog (представлениях горутин в очередях)
+	lock mutex // лок.......
 }
 
 type waitq struct {
-	first *sudog
-	last  *sudog
+	first *sudog // Первый элемент в очереди (двусвязный список)
+	last  *sudog // Последний элемент в очереди
 }
 
 //go:linkname reflect_makechan reflect.makechan
@@ -64,26 +79,47 @@ func reflect_makechan(t *chantype, size int) *hchan {
 	return makechan(t, size)
 }
 
+// Функция для создания канала с 64-битным размером
+// Используется в случаях, когда размер может превышать int (например, из reflect)
 func makechan64(t *chantype, size int64) *hchan {
+	// Проверяем, что size помещается в int (на 32-битных платформах int = 32 бита)
 	if int64(int(size)) != size {
 		panic(plainError("makechan: size out of range"))
 	}
 
+	// Вызываем основную функцию создания с приведением к int
 	return makechan(t, int(size))
 }
 
+// основная функция создания канала
 func makechan(t *chantype, size int) *hchan {
+	// Получаем тип элемента канала (например, int, string, struct{...})
 	elem := t.Elem
 
 	// compiler checks this but be safe.
+	// Проверка размера элемента (компилятор уже проверяет, но на всякий случай)
+	// Если размер элемента >= 2^16 байт (64KB) — паника
+	// Это ограничение из-за поля elemsize uint16 (максимум 65535)
+	// ПОГ, элемент не может быть больше 64 килобайт
 	if elem.Size_ >= 1<<16 {
 		throw("makechan: invalid channel element type")
 	}
+
+	// Проверка выравнивания структуры hchan
+	// hchanSize должно быть кратно maxAlign (8)
+	// И выравнивание элемента не должно превышать maxAlign
 	if hchanSize%maxAlign != 0 || elem.Align_ > maxAlign {
 		throw("makechan: bad alignment")
 	}
 
+	// Вычисляем общий размер буфера: размер_элемента * количество
+	// math.MulUintptr возвращает произведение и флаг переполнения
 	mem, overflow := math.MulUintptr(elem.Size_, uintptr(size))
+
+	// Проверки на корректность размера:
+	// 1. Было ли переполнение при умножении
+	// 2. Не превышает ли общий размер (mem + hchanSize) максимально допустимый
+	// 3. Размер не отрицательный
 	if overflow || mem > maxAlloc-hchanSize || size < 0 {
 		panic(plainError("makechan: size out of range"))
 	}
@@ -94,28 +130,50 @@ func makechan(t *chantype, size int) *hchan {
 	// TODO(dvyukov,rlh): Rethink when collector can move allocated objects.
 	var c *hchan
 	switch {
+	// Случай 1: Нулевой размер буфера или нулевой размер элемента
 	case mem == 0:
 		// Queue or element size is zero.
+		// Выделяем только структуру hchan (без буфера)
 		c = (*hchan)(mallocgc(hchanSize, nil, true))
 		// Race detector uses this location for synchronization.
+		// Для детектора гонок (race detector) используем специальный адрес
 		c.buf = c.raceaddr()
+
+	// Случай 2: Элементы НЕ содержат указателей
 	case !elem.Pointers():
 		// Elements do not contain pointers.
 		// Allocate hchan and buf in one call.
+		// Elements do not contain pointers.
+
+		// Выделяем одним блоком: структура hchan + буфер
+		// nil - нет информации о типе для GC, так как нет указателей
+		// true - память должна быть обнулена
 		c = (*hchan)(mallocgc(hchanSize+mem, nil, true))
+		// Буфер начинается сразу после структуры hchan
 		c.buf = add(unsafe.Pointer(c), hchanSize)
+
+	// Случай 3: Элементы содержат указатели
 	default:
 		// Elements contain pointers.
-		c = new(hchan)
+		// Выделяем отдельно структуру и буфер
+		c = new(hchan) // Выделяет hchanSize через mallocgc
+		// Выделяем буфер с информацией о типе элемента для сборщика мусора
 		c.buf = mallocgc(mem, elem, true)
 	}
 
+	// Размер одного элемента
 	c.elemsize = uint16(elem.Size_)
+	// Тип элемента (для type assertions и GC)
 	c.elemtype = elem
+	// Размер буфера
 	c.dataqsiz = uint(size)
+
+	// Инициализация для тестирования (только если есть bubble в текущей горутине)
 	if b := getg().bubble; b != nil {
 		c.bubble = b
 	}
+	// Инициализация мьютекса с указанием ранга блокировки
+	// lockRankHchan предотвращает deadlock'и при определенном порядке захвата
 	lockInit(&c.lock, lockRankHchan)
 
 	if debugChan {
@@ -173,11 +231,12 @@ func chansend1(c *hchan, elem unsafe.Pointer) {
  * been closed.  it is easiest to loop and re-run
  * the operation; we'll see that it's now closed.
  */
-func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
+func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool { // отправка данных в канал
 	if c == nil {
 		if !block {
 			return false
 		}
+		// паркует горутину, ток какую ?
 		gopark(nil, nil, waitReasonChanSendNilChan, traceBlockForever, 2)
 		throw("unreachable")
 	}
@@ -280,7 +339,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 	if c.bubble != nil {
 		reason = waitReasonSynctestChanSend
 	}
-	gopark(chanparkcommit, unsafe.Pointer(&c.lock), reason, traceBlockChanSend, 2)
+	gopark(chanparkcommit, unsafe.Pointer(&c.lock), reason, traceBlockChanSend, 2) // паркуем горутину
 	// Ensure the value being sent is kept alive until the
 	// receiver copies it out. The sudog has a pointer to the
 	// stack object, but sudogs aren't considered as roots of the
@@ -327,26 +386,55 @@ func send(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 			// Pretend we go through the buffer, even though
 			// we copy directly. Note that we need to increment
 			// the head/tail locations only when raceenabled.
+
+			// Для буферизованного канала делаем вид,
+			// что данные прошли через буфер (хотя копируем напрямую)
+			// Это нужно для корректной работы race detector
+
+			// Уведомляем race detector о "чтении" из буфера
 			racenotify(c, c.recvx, nil)
+
+			// Уведомляем race detector о "записи" в буфер
 			racenotify(c, c.recvx, sg)
+			// Обновляем индексы как будто данные прошли через буфер
 			c.recvx++
 			if c.recvx == c.dataqsiz {
-				c.recvx = 0
+				c.recvx = 0 // Кольцевой буфер - возвращаемся в начало
 			}
 			c.sendx = c.recvx // c.sendx = (c.sendx+1) % c.dataqsiz
 		}
 	}
+	// sg.elem - это указатель в стеке горутины-получателя
 	if sg.elem != nil {
+		// sendDirect копирует данные из ep (стек отправителя)
+		// в sg.elem (стек получателя)
 		sendDirect(c.elemtype, sg, ep)
+		// Обнуляем, чтобы не скопировать дважды
 		sg.elem = nil
 	}
+	// Получаем горутину-получателя из структуры sudog
 	gp := sg.g
-	unlockf()
+	// ВАЖНО! Разблокируем канал ПЕРЕД пробуждением горутины
+	unlockf() // Иначе может возникнуть deadlock
+
+	// Передаём sudog в параметры горутины-получателя
+	// Получатель сможет проверить sg.success или другие поля
 	gp.param = unsafe.Pointer(sg)
+
+	// Отмечаем, что операция успешна
+	// Особенно важно для select, где может быть несколько попыток
 	sg.success = true
+
+	// Если включено измерение времени (для профилирования),
+	// сохраняем время завершения операции
 	if sg.releasetime != 0 {
 		sg.releasetime = cputicks()
 	}
+
+	// Пробуждаем горутину-получателя
+	// goready меняет статус горутины с Gwaiting на Grunnable
+	// и помещает её в очередь выполнения (runqueue)
+	// skip+1 - количество фреймов стека для пропуска при трассировке
 	goready(gp, skip+1)
 }
 
@@ -389,16 +477,35 @@ func timerchandrain(c *hchan) bool {
 // are not in the heap, so that will not help. We arrange to call
 // memmove and typeBitsBulkBarrier instead.
 
+// sendDirect копирует данные напрямую между стеками горутин
+// src - на нашем стеке (отправитель), dst - слот на стеке другой горутины (получатель)
 func sendDirect(t *_type, sg *sudog, src unsafe.Pointer) {
 	// src is on our stack, dst is a slot on another stack.
 
 	// Once we read sg.elem out of sg, it will no longer
 	// be updated if the destination's stack gets copied (shrunk).
 	// So make sure that no preemption points can happen between read & use.
+
+	// Получаем указатель на место в стеке получателя, куда нужно скопировать данные
+	// sg.elem - это unsafe.Pointer, который указывает на переменную в стеке горутины-получателя
+	// Например, если получатель делает: x := <-ch, то sg.elem указывает на &x в его стеке
 	dst := sg.elem
+
+	// После того как мы прочитали sg.elem из sg,
+	// это значение больше не будет обновляться, даже если стек получателя
+	// будет скопирован (например, при сжатии стека).
+	// Поэтому мы должны убедиться, что между чтением sg.elem и его использованием
+	// не будет точек прерывания (preemption points) - мест, где горутина могла бы быть вытеснена.
+	//  Барьер для сборщика мусора (write barrier)
+	// typeBitsBulkBarrier выполняет барьер для копирования блока памяти
+	// Он сообщает сборщику мусора, что мы копируем данные, которые могут содержать указатели
 	typeBitsBulkBarrier(t, uintptr(dst), uintptr(src), t.Size_)
 	// No need for cgo write barrier checks because dst is always
 	// Go memory.
+
+	// Копируем данные из src (стек отправителя) в dst (стек получателя)
+	// t.Size_ - размер типа в байтах
+	// memmove - низкоуровневая функция копирования памяти (аналог memcpy в C)
 	memmove(dst, src, t.Size_)
 }
 
@@ -505,12 +612,12 @@ func empty(c *hchan) bool {
 // entry points for <- c from compiled code.
 //
 //go:nosplit
-func chanrecv1(c *hchan, elem unsafe.Pointer) {
+func chanrecv1(c *hchan, elem unsafe.Pointer) { // <- myChan
 	chanrecv(c, elem, true)
 }
 
 //go:nosplit
-func chanrecv2(c *hchan, elem unsafe.Pointer) (received bool) {
+func chanrecv2(c *hchan, elem unsafe.Pointer) (received bool) { // val, ok <- myChan
 	_, received = chanrecv(c, elem, true)
 	return
 }
@@ -765,6 +872,7 @@ func chanparkcommit(gp *g, chanLock unsafe.Pointer) bool {
 	return true
 }
 
+// ясно, синтаксический сахар
 // compiler implements
 //
 //	select {
@@ -785,6 +893,7 @@ func selectnbsend(c *hchan, elem unsafe.Pointer) (selected bool) {
 	return chansend(c, elem, false, sys.GetCallerPC())
 }
 
+// ясно, синтаксический сахар
 // compiler implements
 //
 //	select {
